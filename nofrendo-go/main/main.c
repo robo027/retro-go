@@ -8,7 +8,7 @@
 #include <nes/input.h>
 #include <nes/state.h>
 
-#define AUDIO_SAMPLE_RATE   (32000)
+#define AUDIO_SAMPLE_RATE   (44100)
 #define AUDIO_BUFFER_LENGTH (AUDIO_SAMPLE_RATE / 50 + 1)
 
 static uint16_t myPalette[64];
