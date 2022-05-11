@@ -130,13 +130,20 @@ void rg_storage_init(void)
 
 void rg_storage_deinit(void)
 {
-    rg_storage_commit();
-
-    esp_err_t err = esp_vfs_fat_sdmmc_unmount();
-    if (err != ESP_OK)
+    if (sdcard_mount == ESP_OK)
     {
-        RG_LOGE("SD Card unmounting failed. err=0x%x\n", err);
-        return;
+        rg_storage_commit();
+
+        // Hopefully all files were closed and flushed by now, but just in case...
+        fflush(NULL);
+
+        // At this point some files might still be open by apps and it causes a crash...
+        // esp_err_t err = esp_vfs_fat_sdmmc_unmount();
+        // if (err != ESP_OK)
+        // {
+        //     RG_LOGE("SD Card unmounting failed. err=0x%x\n", err);
+        //     return;
+        // }
     }
 
     RG_LOGI("SD Card unmounted.\n");
