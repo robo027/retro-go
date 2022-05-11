@@ -29,6 +29,26 @@ typedef int8_t n8;
 typedef int16_t n16;
 typedef int32_t n32;
 
+typedef struct
+{
+	struct {
+		byte *buffer;
+		un16 cgb_pal[64];
+		un16 dmg_pal[4][4];
+		int colorize;
+		int format;
+		int enabled;
+		void (*vblank)(void);
+	} lcd;
+
+	struct {
+		uint samplerate;
+		bool stereo;
+		uint pos, len;
+		n16* buffer;
+	} snd;
+} gb_host_t;
+
 typedef enum
 {
 	GB_HW_DMG,
@@ -70,6 +90,8 @@ typedef enum
 	GB_PALETTE_SGB,
 	GB_PALETTE_COUNT,
 } gb_palette_t;
+
+extern gb_host_t host;
 
 int  gnuboy_init(int samplerate, bool stereo, int pixformat, void *vblank_func);
 int  gnuboy_load_bios(const char *file);

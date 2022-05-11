@@ -5,13 +5,19 @@
 #include "hw.h"
 #include "cpu.h"
 
-static void (*vblank_callback)(void);
+
+gb_host_t host;
+
 
 int gnuboy_init(int samplerate, bool stereo, int pixformat, void *vblank_func)
 {
-	sound_init(samplerate, stereo);
-	lcd.out.format = pixformat;
-	vblank_callback = vblank_func;
+	host.snd.samplerate = samplerate;
+	host.snd.stereo = stereo;
+	host.snd.buffer = malloc(samplerate / 4);
+	host.snd.len = samplerate / 8;
+	host.snd.pos = 0;
+	host.lcd.format = pixformat;
+	host.lcd.vblank = vblank_func;
 	// gnuboy_reset(true);
 	return 0;
 }
@@ -49,40 +55,28 @@ void gnuboy_reset(bool hard)
 */
 void gnuboy_run(bool draw)
 {
-	lcd.out.enabled = draw;
-	snd.output.pos = 0;
+	host.lcd.enabled = draw;
+	host.snd.pos = 0;
 
 	/* FIXME: judging by the time specified this was intended
 	to emulate through vblank phase which is handled at the
 	end of the loop. */
 	cpu_emulate(2280);
 
-	/* FIXME: R_LY >= 0; comparsion to zero can also be removed
-	altogether, R_LY is always 0 at this point */
-	while (R_LY > 0 && R_LY < 144) {
-		/* Step through visible line scanning phase */
+	/* Step through visible line scanning phase */
+	while (R_LY > 0 && R_LY < 144)
 		cpu_emulate(lcd.cycles);
-	}
 
-	/* VBLANK BEGIN */
-	if (draw && vblank_callback) {
-		(vblank_callback)();
-	}
-
+	/* Vblank reached, sync hardware */
 	hw_vblank();
 
-	if (!(R_LCDC & 0x80)) {
-		/* LCDC operation stopped */
-		/* FIXME: judging by the time specified, this is
-		intended to emulate through visible line scanning
-		phase, even though we are already at vblank here */
+	/* LCDC operation stopped */
+	if (!(R_LCDC & 0x80))
 		cpu_emulate(32832);
-	}
 
-	while (R_LY > 0) {
-		/* Step through vblank phase */
+	/* Step through vblank phase */
+	while (R_LY > 0)
 		cpu_emulate(lcd.cycles);
-	}
 }
 
 
@@ -424,15 +418,15 @@ void gnuboy_set_hwtype(gb_hwtype_t type)
 
 int gnuboy_get_palette(void)
 {
-	return lcd.out.colorize;
+	return host.lcd.colorize;
 }
 
 
 void gnuboy_set_palette(gb_palette_t pal)
 {
-	if (lcd.out.colorize != pal)
+	if (host.lcd.colorize != pal)
 	{
-		lcd.out.colorize = pal;
+		host.lcd.colorize = pal;
 		lcd_rebuildpal();
 	}
 }

@@ -14,8 +14,6 @@ gb_lcd_t lcd;
 
 /******************* BEGIN LCD *******************/
 
-#define WX lcd.WX
-#define WY lcd.WY
 #define priused(attr) ({un32 *a = (un32*)(attr); (int)((a[0]|a[1]|a[2]|a[3]|a[4]|a[5]|a[6]|a[7])&0x80808080);})
 #define blendcpy(dest, src, b, cnt) {					\
 	byte *s = (src), *d = (dest), _b = (b), c = (cnt); 	\
@@ -65,7 +63,7 @@ static inline void tilebuf()
 	tilemap = lcd.vbank[0] + base;
 	attrmap = lcd.vbank[1] + base;
 	tilebuf = lcd.BG;
-	cnt = ((WX + 7) >> 3) + 1;
+	cnt = ((lcd.WX + 7) >> 3) + 1;
 
 	if (hw.hwtype == GB_HW_CGB)
 	{
@@ -106,7 +104,7 @@ static inline void tilebuf()
 			}
 	}
 
-	if (WX >= 160) return;
+	if (lcd.WX >= 160) return;
 
 	/* Window tiles */
 
@@ -114,7 +112,7 @@ static inline void tilebuf()
 	tilemap = lcd.vbank[0] + base;
 	attrmap = lcd.vbank[1] + base;
 	tilebuf = lcd.WND;
-	cnt = ((160 - WX) >> 3) + 1;
+	cnt = ((160 - lcd.WX) >> 3) + 1;
 
 	if (hw.hwtype == GB_HW_CGB)
 	{
@@ -148,6 +146,7 @@ static inline void tilebuf()
 
 static inline void bg_scan()
 {
+	int WX = lcd.WX;
 	int cnt;
 	byte *src, *dest;
 	int *tile;
@@ -174,6 +173,7 @@ static inline void bg_scan()
 
 static inline void wnd_scan()
 {
+	int WX = lcd.WX;
 	int cnt;
 	byte *src, *dest;
 	int *tile;
@@ -193,6 +193,7 @@ static inline void wnd_scan()
 
 static inline void bg_scan_pri()
 {
+	int WX = lcd.WX;
 	int cnt, i;
 	byte *src, *dest;
 
@@ -226,6 +227,7 @@ static inline void bg_scan_pri()
 
 static inline void wnd_scan_pri()
 {
+	int WX = lcd.WX;
 	int cnt, i;
 	byte *src, *dest;
 
@@ -254,6 +256,7 @@ static inline void wnd_scan_pri()
 
 static inline void bg_scan_color()
 {
+	int WX = lcd.WX;
 	int cnt;
 	byte *src, *dest;
 	int *tile;
@@ -280,6 +283,7 @@ static inline void bg_scan_color()
 
 static inline void wnd_scan_color()
 {
+	int WX = lcd.WX;
 	int cnt;
 	byte *src, *dest;
 	int *tile;
@@ -455,10 +459,10 @@ static void lcd_reset(bool hard)
 	memset(lcd.PRI, 0, sizeof(lcd.PRI));
 	memset(lcd.VS, 0, sizeof(lcd.VS));
 
-	WX = WY = lcd.WT = lcd.WV = 0;
+	lcd.WX = lcd.WT = lcd.WV = 0;
 	lcd.S = lcd.T = lcd.U = lcd.V = 0;
+	lcd.WY = R_WY;
 
-	WY = R_WY;
 	lcd_rebuildpal();
 }
 
@@ -475,11 +479,11 @@ static inline void pal_update(byte i)
 
 	un32 out = (r << 11) | (g << (5 + 1)) | (b);
 
-	if (lcd.out.format == GB_PIXEL_565_BE) {
+	if (host.lcd.format == GB_PIXEL_565_BE) {
 		out = (out << 8) | (out >> 8);
 	}
 
-	lcd.out.cgb_pal[i] = out;
+	host.lcd.cgb_pal[i] = out;
 }
 
 static void pal_write_cgb(byte i, byte b)
@@ -491,7 +495,7 @@ static void pal_write_cgb(byte i, byte b)
 
 static void pal_write_dmg(byte i, byte mapnum, byte d)
 {
-	un16 *map = lcd.out.dmg_pal[mapnum & 3];
+	un16 *map = host.lcd.dmg_pal[mapnum & 3];
 
 	for (int j = 0; j < 8; j += 2)
 	{
@@ -508,7 +512,7 @@ void lcd_rebuildpal()
 	{
 		const uint16_t *bgp, *obp0, *obp1;
 
-		int palette = lcd.out.colorize % GB_PALETTE_COUNT;
+		int palette = host.lcd.colorize % GB_PALETTE_COUNT;
 
 		if (palette == GB_PALETTE_GBC && cart.colorize)
 		{
@@ -536,10 +540,10 @@ void lcd_rebuildpal()
 			MESSAGE_INFO("Using Built-in palette %d\n", palette);
 		}
 
-		memcpy(&lcd.out.dmg_pal[0], bgp, 8);
-		memcpy(&lcd.out.dmg_pal[1], bgp, 8);
-		memcpy(&lcd.out.dmg_pal[2], obp0, 8);
-		memcpy(&lcd.out.dmg_pal[3], obp1, 8);
+		memcpy(&host.lcd.dmg_pal[0], bgp, 8);
+		memcpy(&host.lcd.dmg_pal[1], bgp, 8);
+		memcpy(&host.lcd.dmg_pal[2], obp0, 8);
+		memcpy(&host.lcd.dmg_pal[3], obp1, 8);
 
 		pal_write_dmg(0, 0, R_BGP);
 		pal_write_dmg(8, 1, R_BGP);
@@ -606,7 +610,7 @@ static void lcd_lcdc_change(byte b)
 		R_LY = 0;
 		stat_change(2);
 		lcd.cycles = 40;  // Correct value seems to be 38
-		WY = R_WY;
+		lcd.WY = R_WY;
 	}
 }
 
@@ -664,22 +668,23 @@ static void lcd_hdma_cont()
 */
 static inline void lcd_renderline()
 {
-	if (!lcd.out.enabled || !lcd.out.buffer)
+	if (!host.lcd.enabled || !host.lcd.buffer)
 		return;
 
-	int SX, SY, SL, NS;
+	int SL = R_LY;
+	int SX = R_SCX;
+	int SY = (R_SCY + SL) & 0xff;
+	int WX = R_WX - 7;
+	int WY = lcd.WY;
+	int NS;
 
-	SL = R_LY;
-	SX = R_SCX;
-	SY = (R_SCY + SL) & 0xff;
+	if (WY>SL || WY<0 || WY>143 || WX<-7 || WX>160 || !(R_LCDC&0x20))
+		lcd.WX = WX = 160;
+
 	lcd.S = SX >> 3;
 	lcd.T = SY >> 3;
 	lcd.U = SX & 7;
 	lcd.V = SY & 7;
-
-	WX = R_WX - 7;
-	if (WY>SL || WY<0 || WY>143 || WX<-7 || WX>160 || !(R_LCDC&0x20))
-		WX = 160;
 	lcd.WT = (SL - WY) >> 3;
 	lcd.WV = (SL - WY) & 7;
 
@@ -712,14 +717,14 @@ static inline void lcd_renderline()
 
 	spr_scan(NS);
 
-	if (lcd.out.format == GB_PIXEL_PALETTED)
+	if (host.lcd.format == GB_PIXEL_PALETTED)
 	{
-		memcpy(lcd.out.buffer + SL * 160 , lcd.BUF, 160);
+		memcpy(host.lcd.buffer + SL * 160 , lcd.BUF, 160);
 	}
 	else
 	{
-		un16 *dst = (un16*)lcd.out.buffer + SL * 160;
-		un16 *pal = (un16*)lcd.out.cgb_pal;
+		un16 *dst = (un16*)host.lcd.buffer + SL * 160;
+		un16 *pal = (un16*)host.lcd.cgb_pal;
 
 		for (int i = 0; i < 160; ++i)
 			dst[i] = pal[lcd.BUF[i]];
@@ -803,7 +808,7 @@ void lcd_emulate(int cycles)
 			}
 			if (R_LY == 0)
 			{
-				WY = R_WY;
+				lcd.WY = R_WY;
 				stat_change(2); /* -> search */
 				lcd.cycles += 40;
 				break;
@@ -911,27 +916,14 @@ void sound_dirty()
 	s4_freq();
 }
 
-void sound_init(int samplerate, bool stereo)
-{
-	snd = (gb_snd_t){
-		.output = {
-			.samplerate = samplerate,
-			.stereo = stereo,
-			.buf = malloc(samplerate / 4),
-			.len = samplerate / 8,
-			.pos = 0,
-		},
-	};
-}
-
 static void sound_reset(bool hard)
 {
 	memset(snd.ch, 0, sizeof(snd.ch));
 	memcpy(snd.wave, hw.hwtype == GB_HW_CGB ? cgbwave : dmgwave, 16);
 	memcpy(hw.ioregs + 0x30, snd.wave, 16);
-	snd.rate = (int)(((1<<21) / (double)snd.output.samplerate) + 0.5);
+	snd.rate = (int)(((1<<21) / (double)host.snd.samplerate) + 0.5);
 	snd.cycles = 0;
-	snd.output.pos = 0;
+	host.snd.pos = 0;
 	sound_off();
 	R_NR52 = 0xF1;
 }
@@ -1066,23 +1058,23 @@ static void sound_emulate(void)
 		l <<= 4;
 		r <<= 4;
 
-		if (snd.output.buf == NULL)
+		if (host.snd.buffer == NULL)
 		{
-			MESSAGE_DEBUG("no audio buffer... (output.len=%d)\n", snd.output.len);
+			MESSAGE_DEBUG("no audio buffer... (output.len=%d)\n", host.snd.len);
 		}
-		else if (snd.output.pos >= snd.output.len)
+		else if (host.snd.pos >= host.snd.len)
 		{
-			MESSAGE_ERROR("buffer overflow. (output.len=%d)\n", snd.output.len);
-			snd.output.pos = 0;
+			MESSAGE_ERROR("buffer overflow. (output.len=%d)\n", host.snd.len);
+			host.snd.pos = 0;
 		}
-		else if (snd.output.stereo)
+		else if (host.snd.stereo)
 		{
-			snd.output.buf[snd.output.pos++] = (n16)l; //+128;
-			snd.output.buf[snd.output.pos++] = (n16)r; //+128;
+			host.snd.buffer[host.snd.pos++] = (n16)l; //+128;
+			host.snd.buffer[host.snd.pos++] = (n16)r; //+128;
 		}
 		else
 		{
-			snd.output.buf[snd.output.pos++] = (n16)((l+r)>>1); //+128;
+			host.snd.buffer[host.snd.pos++] = (n16)((l+r)>>1); //+128;
 		}
 	}
 	R_NR52 = (R_NR52&0xf0) | S1.on | (S2.on<<1) | (S3.on<<2) | (S4.on<<3);
@@ -1130,7 +1122,7 @@ static void sound_write(byte r, byte b)
 	case RI_NR14:
 		R_NR14 = b;
 		s1_freq();
-		if (b & 128)
+		if (b & 0x80)
 		{
 			S1.swcnt = 0;
 			S1.swfreq = ((R_NR14&7)<<8) + R_NR13;
@@ -1162,7 +1154,7 @@ static void sound_write(byte r, byte b)
 	case RI_NR24:
 		R_NR24 = b;
 		s2_freq();
-		if (b & 128)
+		if (b & 0x80)
 		{
 			S2.envol = R_NR22 >> 4;
 			S2.endir = (R_NR22>>3) & 1;
@@ -1192,7 +1184,7 @@ static void sound_write(byte r, byte b)
 	case RI_NR34:
 		R_NR34 = b;
 		s3_freq();
-		if (b & 128)
+		if (b & 0x80)
 		{
 			if (!S3.on) S3.pos = 0;
 			S3.cnt = 0;
@@ -1219,7 +1211,7 @@ static void sound_write(byte r, byte b)
 		break;
 	case RI_NR44:
 		R_NR44 = b;
-		if (b & 128)
+		if (b & 0x80)
 		{
 			S4.envol = R_NR42 >> 4;
 			S4.endir = (R_NR42>>3) & 1;
@@ -1475,6 +1467,9 @@ void hw_vblank(void)
 	hw.frames++;
 	rtc_tick();
 	sound_emulate();
+
+	if (host.lcd.enabled && host.lcd.vblank)
+		(host.lcd.vblank)();
 }
 
 

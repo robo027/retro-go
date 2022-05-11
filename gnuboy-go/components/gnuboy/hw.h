@@ -218,16 +218,8 @@ typedef struct
 
 typedef struct
 {
-	struct {
-		uint samplerate;
-		bool stereo;
-		uint pos, len;
-		n16* buf;
-	} output;
-
 	int rate, cycles;
 	byte wave[16];
-
 	struct {
 		uint on, pos;
 		int cnt, encnt, swcnt;
@@ -239,10 +231,7 @@ typedef struct
 
 typedef struct
 {
-	byte y;
-	byte x;
-	byte pat;
-	byte flags;
+	byte y, x, pat, flags;
 } gb_obj_t;
 
 typedef struct
@@ -272,15 +261,6 @@ typedef struct
 
 	// Fix for Fushigi no Dungeon - Fuurai no Shiren GB2 and Donkey Kong
 	int enable_window_offset_hack;
-
-	struct {
-		byte *buffer;
-		un16 cgb_pal[64];
-		un16 dmg_pal[4][4];
-		int colorize;
-		int format;
-		int enabled;
-	} out;
 } gb_lcd_t;
 
 extern gb_cart_t cart;
@@ -288,7 +268,6 @@ extern gb_hw_t hw;
 extern gb_snd_t snd;
 extern gb_lcd_t lcd;
 
-void sound_init(int samplerate, bool stereo);
 void sound_dirty(void);
 void lcd_emulate(int cycles);
 void lcd_rebuildpal(void);
