@@ -3,7 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 
-#include "../components/gnuboy/gnuboy.h"
+#include "gnuboy.h"
 
 #define AUDIO_SAMPLE_RATE   (32000)
 
@@ -31,17 +31,17 @@ static bool screenshot_handler(const char *filename, int width, int height)
 
 static bool save_state_handler(const char *filename)
 {
-    return gnuboy_state_save(filename) == 0;
+    return gnuboy_save_state(filename) == 0;
 }
 
 static bool load_state_handler(const char *filename)
 {
-    if (gnuboy_state_load(filename) != 0)
+    if (gnuboy_load_state(filename) != 0)
     {
         // If a state fails to load then we should behave as we do on boot
         // which is a hard reset and load sram if present
         gnuboy_reset(true);
-        gnuboy_sram_load(sramFile);
+        gnuboy_load_sram(sramFile);
 
         return false;
     }
@@ -185,7 +185,7 @@ static rg_gui_event_t sram_settings_cb(rg_gui_option_t *option, rg_gui_event_t e
         {
             rg_system_set_led(1);
 
-            int ret = gnuboy_sram_save(sramFile, false);
+            int ret = gnuboy_save_sram(sramFile, false);
 
             if (ret == -1)
                 rg_gui_alert("Nothing to save", "Cart has no Battery or SRAM!");
@@ -216,9 +216,9 @@ static void auto_sram_update(void)
     if (autoSaveSRAM > 0 && gnuboy_sram_dirty())
     {
         rg_system_set_led(1);
-        if (gnuboy_sram_save(sramFile, true) != 0)
+        if (gnuboy_save_sram(sramFile, true) != 0)
         {
-            MESSAGE_ERROR("gnuboy_sram_save() failed...\n");
+            MESSAGE_ERROR("gnuboy_save_sram() failed...\n");
         }
         rg_system_set_led(0);
     }
@@ -275,7 +275,7 @@ void app_main(void)
     if (app->bootFlags & RG_BOOT_RESUME)
         rg_emu_load_state(0);
     else
-        gnuboy_sram_load(sramFile);
+        gnuboy_load_sram(sramFile);
 
     // Don't show palette option for GBC
     if (gnuboy_get_hwtype() == GB_HW_CGB)

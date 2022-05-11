@@ -44,8 +44,8 @@ typedef struct
 	struct {
 		uint samplerate;
 		bool stereo;
-		uint pos, len;
-		n16* buffer;
+		size_t pos, len;
+		int16_t* buffer;
 	} snd;
 } gb_host_t;
 
@@ -98,6 +98,11 @@ int  gnuboy_load_bios(const char *file);
 void gnuboy_free_bios(void);
 int  gnuboy_load_rom(const char *file);
 void gnuboy_free_rom(void);
+int  gnuboy_load_state(const char *file);
+int  gnuboy_save_state(const char *file);
+int  gnuboy_load_sram(const char *file);
+int  gnuboy_save_sram(const char *file, bool quick_save);
+bool gnuboy_sram_dirty(void);
 void gnuboy_reset(bool hard);
 void gnuboy_run(bool draw);
 void gnuboy_load_bank(int);
@@ -109,9 +114,3 @@ int  gnuboy_get_hwtype(void);
 void gnuboy_set_hwtype(gb_hwtype_t type);
 int  gnuboy_get_palette(void);
 void gnuboy_set_palette(gb_palette_t pal);
-
-bool gnuboy_sram_dirty(void);
-int gnuboy_sram_load(const char *file);
-int gnuboy_sram_save(const char *file, bool quick_save);
-int gnuboy_state_load(const char *file);
-int gnuboy_state_save(const char *file);

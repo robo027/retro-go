@@ -164,22 +164,20 @@ typedef struct
 	byte ioregs[256];
 	byte *rmap[0x10];
 	byte *wmap[0x10];
-	un32 ilines;
-	un32 pad;
-	n32 hdma;
-	n32 serial;
-	byte *bios;
-
+	un32 interrupts;
+	un32 joypad;
 	un32 hwtype;
-	un32 frames;
+	byte *bios;
+	n32 serial;
+	n32 hdma;
 } gb_hw_t;
 
 typedef struct
 {
-	uint sel, flags, latch;
-	uint ticks;      // Ticks (60 = +1s)
-	uint d, h, m, s; // Current time
-	uint regs[5];    // Latched time
+	n32 sel, flags, latch;
+	n32 ticks;      // Ticks (60 = +1s)
+	n32 d, h, m, s; // Current time
+	n32 regs[5];    // Latched time
 } gb_rtc_t;
 
 typedef struct
@@ -268,17 +266,10 @@ extern gb_hw_t hw;
 extern gb_snd_t snd;
 extern gb_lcd_t lcd;
 
-void sound_dirty(void);
 void lcd_emulate(int cycles);
-void lcd_rebuildpal(void);
-
-void hw_reset(bool hard);
-void hw_setpad(un32 new_pad);
 void hw_interrupt(byte i, int level);
-void hw_updatemap(void);
 void hw_write(uint a, byte b);
 byte hw_read(uint a);
-void hw_vblank(void);
 
 
 static inline byte readb(uint a)
