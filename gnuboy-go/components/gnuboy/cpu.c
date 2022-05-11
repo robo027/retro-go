@@ -728,7 +728,7 @@ next:
 
 	default:
 		MESSAGE_ERROR("invalid opcode 0x%02X at address 0x%04X, rombank = %d\n",
-			op, (PC-1) & 0xffff, cart.rombank);
+			op, (PC-1) & 0xffff, 0);
 		break; // abort();
 	}
 

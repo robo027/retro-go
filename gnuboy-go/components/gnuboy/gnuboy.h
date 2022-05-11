@@ -235,5 +235,4 @@ void hw_write(uint a, byte b);
 byte hw_read(uint a);
 
 extern gb_host_t host;
-extern gb_cart_t cart;
 extern gb_hw_t hw;

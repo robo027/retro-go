@@ -8,32 +8,143 @@
 #include "tables/snd.h"
 #include "tables/lcd.h"
 
-
+static gb_snd_t snd;
+static gb_lcd_t lcd;
+static gb_cart_t cart;
 gb_host_t host;
-gb_cart_t cart;
 gb_hw_t hw;
-gb_snd_t snd;
-gb_lcd_t lcd;
-
-static void hw_interrupt(byte i, int level);
 
 
-static inline byte readb(uint a)
+/*
+ * In order to make reads and writes efficient, we keep tables
+ * (indexed by the high nibble of the address) specifying which
+ * regions can be read/written without a function call. For such
+ * ranges, the pointer in the map table points to the base of the
+ * region in host system memory. For ranges that require special
+ * processing, the pointer is NULL.
+ *
+ * hw_updatemap is called whenever bank changes or other operations
+ * make the old maps potentially invalid.
+ */
+static void hw_updatemap(void)
 {
-	byte *p = hw.rmap[a>>12];
-	if (p) return p[a];
-	return hw_read(a);
+	int rombank = cart.rombank & (cart.romsize - 1);
+
+	if (cart.rombanks[rombank] == NULL)
+	{
+		gnuboy_load_bank(rombank);
+	}
+
+	// ROM
+	hw.rmap[0x0] = cart.rombanks[0];
+	hw.rmap[0x1] = cart.rombanks[0];
+	hw.rmap[0x2] = cart.rombanks[0];
+	hw.rmap[0x3] = cart.rombanks[0];
+
+	// Force bios to go through hw_read (speed doesn't really matter here)
+	if (hw.bios && (R_BIOS & 1) == 0)
+	{
+		hw.rmap[0x0] = NULL;
+	}
+
+	// Cartridge ROM
+	hw.rmap[0x4] = cart.rombanks[rombank] - 0x4000;
+	hw.rmap[0x5] = hw.rmap[0x4];
+	hw.rmap[0x6] = hw.rmap[0x4];
+	hw.rmap[0x7] = hw.rmap[0x4];
+
+	// Video RAM
+	hw.rmap[0x8] = hw.wmap[0x8] = lcd.vbank[R_VBK & 1] - 0x8000;
+	hw.rmap[0x9] = hw.wmap[0x9] = lcd.vbank[R_VBK & 1] - 0x8000;
+
+	// Cartridge RAM
+	hw.rmap[0xA] = hw.wmap[0xA] = NULL;
+	hw.rmap[0xB] = hw.wmap[0xB] = NULL;
+
+	// Work RAM
+	hw.rmap[0xC] = hw.wmap[0xC] = hw.rambanks[0] - 0xC000;
+
+	// Work RAM (GBC)
+	if (hw.hwtype == GB_HW_CGB)
+		hw.rmap[0xD] = hw.wmap[0xD] = hw.rambanks[(R_SVBK & 0x7) ?: 1] - 0xD000;
+
+	// Mirror of 0xC000
+	hw.rmap[0xE] = hw.wmap[0xE] = hw.rambanks[0] - 0xE000;
+
+	// IO port and registers
+	hw.rmap[0xF] = hw.wmap[0xF] = NULL;
 }
 
-static inline void writeb(uint a, byte b)
+/*
+ * hw_interrupt changes the virtual interrupt line(s) defined by i
+ * The interrupt fires (added to R_IF) when the line transitions from 0 to 1.
+ * It does not refire if the line was already high.
+ */
+static void hw_interrupt(byte i, int level)
 {
-	byte *p = hw.wmap[a>>12];
-	if (p) p[a] = b;
-	else hw_write(a, b);
+	if (level == 0)
+	{
+		hw.interrupts &= ~i;
+	}
+	else if ((hw.interrupts & i) == 0)
+	{
+		hw.interrupts |= i;
+		R_IF |= i; // Fire!
+
+		if ((R_IE & i) != 0)
+		{
+			// Wake up the CPU when an enabled interrupt occurs
+			// IME doesn't matter at this point, only IE
+			cpu.halted = 0;
+		}
+	}
 }
 
 
-static void hw_updatemap(void);
+static void hw_hdma(int c)
+{
+	uint src = (R_HDMA1 << 8) | (R_HDMA2 & 0xF0);
+	uint dst = 0x8000 | ((R_HDMA3 & 0x1F) << 8) | (R_HDMA4 & 0xF0);
+	uint cnt = 0;
+
+	if (c == -1)
+	{
+		cnt = 16;
+		hw.hdma--;
+	}
+	else if ((hw.hdma|c) & 0x80)
+	{
+		/* Begin or cancel HDMA */
+		hw.hdma = c;
+		R_HDMA5 = c & 0x7f;
+		return;
+	}
+	else
+	{
+		cnt = (c + 1) << 4;
+		R_HDMA5 = 0x00;
+	}
+
+	// if (!(hw.hdma & 0x80))
+	// 	return;
+
+	/* FIXME - this should use cpu time! */
+	while (cnt--)
+	{
+		uint d = dst++, s = src++;
+		byte *sp = hw.rmap[d>>12];
+		byte *dp = hw.wmap[s>>12];
+		uint b = sp ? sp[s] : hw_read(s);
+		if (dp) dp[d] = b; else hw_write(d, b);
+	}
+
+	R_HDMA1 = src >> 8;
+	R_HDMA2 = src & 0xF0;
+	R_HDMA3 = (dst >> 8) & 0x1F;
+	R_HDMA4 = dst & 0xF0;
+	R_HDMA5--;
+}
+
 
 /******************* BEGIN LCD *******************/
 
@@ -66,404 +177,6 @@ static inline byte *get_patpix(int tile, int x)
 		}
 
 	return pix;
-}
-
-static inline void tilebuf()
-{
-	int cnt, base;
-	byte *tilemap, *attrmap;
-	int *tilebuf;
-
-	/* Background tiles */
-
-	const int8_t wraptable[64] = {
-		0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
-		0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,-32
-	};
-	const int8_t *wrap = wraptable + lcd.S;
-
-	base = ((R_LCDC&0x08)?0x1C00:0x1800) + (lcd.T<<5) + lcd.S;
-	tilemap = lcd.vbank[0] + base;
-	attrmap = lcd.vbank[1] + base;
-	tilebuf = lcd.BG;
-	cnt = ((lcd.WX + 7) >> 3) + 1;
-
-	if (hw.hwtype == GB_HW_CGB)
-	{
-		if (R_LCDC & 0x10)
-			for (int i = cnt; i > 0; i--)
-			{
-				*(tilebuf++) = *tilemap
-					| (((int)*attrmap & 0x08) << 6)
-					| (((int)*attrmap & 0x60) << 5);
-				*(tilebuf++) = (((int)*attrmap & 0x07) << 2);
-				attrmap += *wrap + 1;
-				tilemap += *(wrap++) + 1;
-			}
-		else
-			for (int i = cnt; i > 0; i--)
-			{
-				*(tilebuf++) = (0x100 + ((n8)*tilemap))
-					| (((int)*attrmap & 0x08) << 6)
-					| (((int)*attrmap & 0x60) << 5);
-				*(tilebuf++) = (((int)*attrmap & 0x07) << 2);
-				attrmap += *wrap + 1;
-				tilemap += *(wrap++) + 1;
-			}
-	}
-	else
-	{
-		if (R_LCDC & 0x10)
-			for (int i = cnt; i > 0; i--)
-			{
-				*(tilebuf++) = *(tilemap++);
-				tilemap += *(wrap++);
-			}
-		else
-			for (int i = cnt; i > 0; i--)
-			{
-				*(tilebuf++) = (0x100 + ((n8)*(tilemap++)));
-				tilemap += *(wrap++);
-			}
-	}
-
-	if (lcd.WX >= 160) return;
-
-	/* Window tiles */
-
-	base = ((R_LCDC&0x40)?0x1C00:0x1800) + (lcd.WT<<5);
-	tilemap = lcd.vbank[0] + base;
-	attrmap = lcd.vbank[1] + base;
-	tilebuf = lcd.WND;
-	cnt = ((160 - lcd.WX) >> 3) + 1;
-
-	if (hw.hwtype == GB_HW_CGB)
-	{
-		if (R_LCDC & 0x10)
-			for (int i = cnt; i > 0; i--)
-			{
-				*(tilebuf++) = *(tilemap++)
-					| (((int)*attrmap & 0x08) << 6)
-					| (((int)*attrmap & 0x60) << 5);
-				*(tilebuf++) = (((int)*(attrmap++)&0x7) << 2);
-			}
-		else
-			for (int i = cnt; i > 0; i--)
-			{
-				*(tilebuf++) = (0x100 + ((n8)*(tilemap++)))
-					| (((int)*attrmap & 0x08) << 6)
-					| (((int)*attrmap & 0x60) << 5);
-				*(tilebuf++) = (((int)*(attrmap++)&0x7) << 2);
-			}
-	}
-	else
-	{
-		if (R_LCDC & 0x10)
-			for (int i = cnt; i > 0; i--)
-				*(tilebuf++) = *(tilemap++);
-		else
-			for (int i = cnt; i > 0; i--)
-				*(tilebuf++) = (0x100 + ((n8)*(tilemap++)));
-	}
-}
-
-static inline void bg_scan()
-{
-	int WX = lcd.WX;
-	int cnt;
-	byte *src, *dest;
-	int *tile;
-
-	if (WX <= 0) return;
-
-	cnt = WX;
-	tile = lcd.BG;
-	dest = lcd.BUF;
-
-	src = get_patpix(*(tile++), lcd.V) + lcd.U;
-	memcpy(dest, src, 8-lcd.U);
-	dest += 8-lcd.U;
-	cnt -= 8-lcd.U;
-
-	while (cnt >= 0)
-	{
-		src = get_patpix(*(tile++), lcd.V);
-		memcpy(dest, src, 8);
-		dest += 8;
-		cnt -= 8;
-	}
-}
-
-static inline void wnd_scan()
-{
-	int WX = lcd.WX;
-	int cnt;
-	byte *src, *dest;
-	int *tile;
-
-	cnt = 160 - WX;
-	tile = lcd.WND;
-	dest = lcd.BUF + WX;
-
-	while (cnt >= 0)
-	{
-		src = get_patpix(*(tile++), lcd.WV);
-		memcpy(dest, src, 8);
-		dest += 8;
-		cnt -= 8;
-	}
-}
-
-static inline void bg_scan_pri()
-{
-	int WX = lcd.WX;
-	int cnt, i;
-	byte *src, *dest;
-
-	if (WX <= 0) return;
-
-	i = lcd.S;
-	cnt = WX;
-	dest = lcd.PRI;
-	src = lcd.vbank[1] + ((R_LCDC&0x08)?0x1C00:0x1800) + (lcd.T<<5);
-
-	if (!priused(src))
-	{
-		memset(dest, 0, cnt);
-		return;
-	}
-
-	memset(dest, src[i++&31]&128, 8-lcd.U);
-	dest += 8-lcd.U;
-	cnt -= 8-lcd.U;
-
-	if (cnt <= 0) return;
-
-	while (cnt >= 8)
-	{
-		memset(dest, src[i++&31]&128, 8);
-		dest += 8;
-		cnt -= 8;
-	}
-	memset(dest, src[i&31]&128, cnt);
-}
-
-static inline void wnd_scan_pri()
-{
-	int WX = lcd.WX;
-	int cnt, i;
-	byte *src, *dest;
-
-	if (WX >= 160) return;
-
-	i = 0;
-	cnt = 160 - WX;
-	dest = lcd.PRI + WX;
-	src = lcd.vbank[1] + ((R_LCDC&0x40)?0x1C00:0x1800) + (lcd.WT<<5);
-
-	if (!priused(src))
-	{
-		memset(dest, 0, cnt);
-		return;
-	}
-
-	while (cnt >= 8)
-	{
-		memset(dest, src[i++]&128, 8);
-		dest += 8;
-		cnt -= 8;
-	}
-
-	memset(dest, src[i]&128, cnt);
-}
-
-static inline void bg_scan_color()
-{
-	int WX = lcd.WX;
-	int cnt;
-	byte *src, *dest;
-	int *tile;
-
-	if (WX <= 0) return;
-
-	cnt = WX;
-	tile = lcd.BG;
-	dest = lcd.BUF;
-
-	src = get_patpix(*(tile++), lcd.V) + lcd.U;
-	blendcpy(dest, src, *(tile++), 8-lcd.U);
-	dest += 8-lcd.U;
-	cnt -= 8-lcd.U;
-
-	while (cnt >= 0)
-	{
-		src = get_patpix(*(tile++), lcd.V);
-		blendcpy(dest, src, *(tile++), 8);
-		dest += 8;
-		cnt -= 8;
-	}
-}
-
-static inline void wnd_scan_color()
-{
-	int WX = lcd.WX;
-	int cnt;
-	byte *src, *dest;
-	int *tile;
-
-	if (WX >= 160) return;
-
-	cnt = 160 - WX;
-	tile = lcd.WND;
-	dest = lcd.BUF + WX;
-
-	while (cnt >= 0)
-	{
-		src = get_patpix(*(tile++), lcd.WV);
-		blendcpy(dest, src, *(tile++), 8);
-		dest += 8;
-		cnt -= 8;
-	}
-}
-
-static inline int spr_enum()
-{
-	if (!(R_LCDC & 0x02))
-		return 0;
-
-	gb_vs_t ts[10];
-	int line = R_LY;
-	int NS = 0;
-
-	for (int i = 0; i < 40; ++i)
-	{
-		gb_obj_t *obj = &lcd.oam.obj[i];
-		int v, pat;
-
-		if (line >= obj->y || line + 16 < obj->y)
-			continue;
-		if (line + 8 >= obj->y && !(R_LCDC & 0x04))
-			continue;
-
-		lcd.VS[NS].x = (int)obj->x - 8;
-		v = line - (int)obj->y + 16;
-
-		if (hw.hwtype == GB_HW_CGB)
-		{
-			pat = obj->pat | (((int)obj->flags & 0x60) << 5)
-				| (((int)obj->flags & 0x08) << 6);
-			lcd.VS[NS].pal = 32 + ((obj->flags & 0x07) << 2);
-		}
-		else
-		{
-			pat = obj->pat | (((int)obj->flags & 0x60) << 5);
-			lcd.VS[NS].pal = 32 + ((obj->flags & 0x10) >> 2);
-		}
-
-		lcd.VS[NS].pri = (obj->flags & 0x80) >> 7;
-
-		if ((R_LCDC & 0x04))
-		{
-			pat &= ~1;
-			if (v >= 8)
-			{
-				v -= 8;
-				pat++;
-			}
-			if (obj->flags & 0x40) pat ^= 1;
-		}
-
-		lcd.VS[NS].pat = pat;
-		lcd.VS[NS].v = v;
-
-		if (++NS == 10) break;
-	}
-
-	// Sort sprites
-	if (hw.hwtype != GB_HW_CGB)
-	{
-		/* not quite optimal but it finally works! */
-		for (int i = 0; i < NS; ++i)
-		{
-			int l = 0;
-			int x = lcd.VS[0].x;
-			for (int j = 1; j < NS; ++j)
-			{
-				if (lcd.VS[j].x < x)
-				{
-					l = j;
-					x = lcd.VS[j].x;
-				}
-			}
-			ts[i] = lcd.VS[l];
-			lcd.VS[l].x = 160;
-		}
-
-		memcpy(lcd.VS, ts, sizeof(ts));
-	}
-
-	return NS;
-}
-
-static inline void spr_scan(int ns)
-{
-	byte *src, *dest, *bg, *pri;
-	int i, b, x, pal;
-	gb_vs_t *vs;
-	byte bgdup[256];
-
-	memcpy(bgdup, lcd.BUF, 256);
-
-	vs = &lcd.VS[ns-1];
-
-	for (; ns; ns--, vs--)
-	{
-		pal = vs->pal;
-		x = vs->x;
-
-		if (x >= 160 || x <= -8)
-			continue;
-
-		src = get_patpix(vs->pat, vs->v);
-		dest = lcd.BUF;
-
-		if (x < 0)
-		{
-			src -= x;
-			i = 8 + x;
-		}
-		else
-		{
-			dest += x;
-			if (x > 152) i = 160 - x;
-			else i = 8;
-		}
-
-		if (vs->pri)
-		{
-			bg = bgdup + (dest - lcd.BUF);
-			while (i--)
-			{
-				b = src[i];
-				if (b && !(bg[i]&3)) dest[i] = pal|b;
-			}
-		}
-		else if (hw.hwtype == GB_HW_CGB)
-		{
-			bg = bgdup + (dest - lcd.BUF);
-			pri = lcd.PRI + (dest - lcd.BUF);
-			while (i--)
-			{
-				b = src[i];
-				if (b && (!pri[i] || !(bg[i]&3)))
-					dest[i] = pal|b;
-			}
-		}
-		else
-		{
-			while (i--) if (src[i]) dest[i] = pal|src[i];
-		}
-	}
 }
 
 static inline void pal_update(byte i)
@@ -552,9 +265,7 @@ static void lcd_rebuildpal()
 	}
 
 	for (int i = 0; i < 64; i++)
-	{
 		pal_update(i);
-	}
 }
 
 static void lcd_reset(bool hard)
@@ -625,39 +336,6 @@ static void inline stat_change(int stat)
 	lcd_stat_trigger();
 }
 
-static void lcd_lcdc_change(byte b)
-{
-	byte old = R_LCDC;
-	R_LCDC = b;
-	if ((R_LCDC ^ old) & 0x80) /* lcd on/off change */
-	{
-		R_LY = 0;
-		stat_change(2);
-		lcd.cycles = 40;  // Correct value seems to be 38
-		lcd.WY = R_WY;
-	}
-}
-
-static void lcd_hdma_cont()
-{
-	uint src = (R_HDMA1 << 8) | (R_HDMA2 & 0xF0);
-	uint dst = 0x8000 | ((R_HDMA3 & 0x1F) << 8) | (R_HDMA4 & 0xF0);
-	uint cnt = 16;
-
-	// if (!(hw.hdma & 0x80))
-	// 	return;
-
-	while (cnt--)
-		writeb(dst++, readb(src++));
-
-	R_HDMA1 = src >> 8;
-	R_HDMA2 = src & 0xF0;
-	R_HDMA3 = (dst >> 8) & 0x1F;
-	R_HDMA4 = dst & 0xF0;
-	R_HDMA5--;
-	hw.hdma--;
-}
-
 /*
 	LCD controller operates with 154 lines per frame, of which lines
 	#0..#143 are visible and lines #144..#153 are processed in vblank
@@ -689,7 +367,7 @@ static void lcd_hdma_cont()
 	sprites on the line and probably other factors. States 1, 2 and 3
 	do not require precise sub-line CPU-LCDC sync, but state 0 might do.
 */
-static inline void lcd_renderline()
+static void lcd_renderline(void)
 {
 	if (!host.lcd.enabled || !host.lcd.buffer)
 		return;
@@ -699,7 +377,7 @@ static inline void lcd_renderline()
 	int SY = (R_SCY + SL) & 0xff;
 	int WX = R_WX - 7;
 	int WY = lcd.WY;
-	int NS;
+	int NS = 0;
 
 	if (WY>SL || WY<0 || WY>143 || WX<-7 || WX>160 || !(R_LCDC&0x20))
 		lcd.WX = WX = 160;
@@ -718,27 +396,359 @@ static inline void lcd_renderline()
 		lcd.WT %= 12;
 	}
 
-	NS = spr_enum();
-	tilebuf();
+	// Sprites enum
+	if ((R_LCDC & 0x02))
+	{
+		for (int i = 0; i < 40; ++i)
+		{
+			gb_obj_t *obj = &lcd.oam.obj[i];
+			int v, pat;
+
+			if (SL >= obj->y || SL + 16 < obj->y)
+				continue;
+			if (SL + 8 >= obj->y && !(R_LCDC & 0x04))
+				continue;
+
+			lcd.VS[NS].x = (int)obj->x - 8;
+			v = SL - (int)obj->y + 16;
+
+			if (hw.hwtype == GB_HW_CGB)
+			{
+				pat = obj->pat | (((int)obj->flags & 0x60) << 5)
+					| (((int)obj->flags & 0x08) << 6);
+				lcd.VS[NS].pal = 32 + ((obj->flags & 0x07) << 2);
+			}
+			else
+			{
+				pat = obj->pat | (((int)obj->flags & 0x60) << 5);
+				lcd.VS[NS].pal = 32 + ((obj->flags & 0x10) >> 2);
+			}
+
+			lcd.VS[NS].pri = (obj->flags & 0x80) >> 7;
+
+			if ((R_LCDC & 0x04))
+			{
+				pat &= ~1;
+				if (v >= 8)
+				{
+					v -= 8;
+					pat++;
+				}
+				if (obj->flags & 0x40) pat ^= 1;
+			}
+
+			lcd.VS[NS].pat = pat;
+			lcd.VS[NS].v = v;
+
+			if (++NS == 10) break;
+		}
+
+		// Sort sprites
+		if (hw.hwtype != GB_HW_CGB)
+		{
+			/* not quite optimal but it finally works! */
+			gb_vs_t ts[10];
+			for (int i = 0; i < NS; ++i)
+			{
+				int l = 0, x = lcd.VS[0].x;
+				for (int j = 1; j < NS; ++j)
+				{
+					if (lcd.VS[j].x < x)
+					{
+						l = j;
+						x = lcd.VS[j].x;
+					}
+				}
+				ts[i] = lcd.VS[l];
+				lcd.VS[l].x = 160;
+			}
+			memcpy(lcd.VS, ts, sizeof(ts));
+		}
+	}
+
+	// bg tiles buffering
+	{
+		const int8_t wraptable[64] = {
+			0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+			0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,-32
+		};
+		const int8_t *wrap = wraptable + lcd.S;
+
+		int base = ((R_LCDC&0x08)?0x1C00:0x1800) + (lcd.T<<5) + lcd.S;
+		byte *tilemap = lcd.vbank[0] + base;
+		byte *attrmap = lcd.vbank[1] + base;
+		int *tilebuf = lcd.BG;
+		int cnt = ((WX + 7) >> 3) + 1;
+
+		if (hw.hwtype == GB_HW_CGB)
+		{
+			if (R_LCDC & 0x10)
+				for (int i = cnt; i > 0; i--)
+				{
+					*(tilebuf++) = *tilemap
+						| (((int)*attrmap & 0x08) << 6)
+						| (((int)*attrmap & 0x60) << 5);
+					*(tilebuf++) = (((int)*attrmap & 0x07) << 2);
+					attrmap += *wrap + 1;
+					tilemap += *(wrap++) + 1;
+				}
+			else
+				for (int i = cnt; i > 0; i--)
+				{
+					*(tilebuf++) = (0x100 + ((n8)*tilemap))
+						| (((int)*attrmap & 0x08) << 6)
+						| (((int)*attrmap & 0x60) << 5);
+					*(tilebuf++) = (((int)*attrmap & 0x07) << 2);
+					attrmap += *wrap + 1;
+					tilemap += *(wrap++) + 1;
+				}
+		}
+		else
+		{
+			if (R_LCDC & 0x10)
+				for (int i = cnt; i > 0; i--)
+				{
+					*(tilebuf++) = *(tilemap++);
+					tilemap += *(wrap++);
+				}
+			else
+				for (int i = cnt; i > 0; i--)
+				{
+					*(tilebuf++) = (0x100 + ((n8)*(tilemap++)));
+					tilemap += *(wrap++);
+				}
+		}
+	}
+
+	// window tiles buffering
+	if (WX < 160)
+	{
+		int base = ((R_LCDC&0x40)?0x1C00:0x1800) + (lcd.WT<<5);
+		byte *tilemap = lcd.vbank[0] + base;
+		byte *attrmap = lcd.vbank[1] + base;
+		int *tilebuf = lcd.WND;
+		int cnt = ((160 - WX) >> 3) + 1;
+
+		if (hw.hwtype == GB_HW_CGB)
+		{
+			if (R_LCDC & 0x10)
+				for (int i = cnt; i > 0; i--)
+				{
+					*(tilebuf++) = *(tilemap++)
+						| (((int)*attrmap & 0x08) << 6)
+						| (((int)*attrmap & 0x60) << 5);
+					*(tilebuf++) = (((int)*(attrmap++)&0x7) << 2);
+				}
+			else
+				for (int i = cnt; i > 0; i--)
+				{
+					*(tilebuf++) = (0x100 + ((n8)*(tilemap++)))
+						| (((int)*attrmap & 0x08) << 6)
+						| (((int)*attrmap & 0x60) << 5);
+					*(tilebuf++) = (((int)*(attrmap++)&0x7) << 2);
+				}
+		}
+		else
+		{
+			if (R_LCDC & 0x10)
+				for (int i = cnt; i > 0; i--)
+					*(tilebuf++) = *(tilemap++);
+			else
+				for (int i = cnt; i > 0; i--)
+					*(tilebuf++) = (0x100 + ((n8)*(tilemap++)));
+		}
+	}
 
 	if (hw.hwtype == GB_HW_CGB)
 	{
-		bg_scan_color();
-		wnd_scan_color();
-		if (NS)
+		// bg scan color
+		if (WX > 0)
 		{
-			bg_scan_pri();
-			wnd_scan_pri();
+			int cnt = WX;
+			int *tile = lcd.BG;
+			byte *dest = lcd.BUF;
+			byte *src = get_patpix(*(tile++), lcd.V) + lcd.U;
+			blendcpy(dest, src, *(tile++), 8-lcd.U);
+			dest += 8-lcd.U;
+			cnt -= 8-lcd.U;
+
+			while (cnt >= 0)
+			{
+				src = get_patpix(*(tile++), lcd.V);
+				blendcpy(dest, src, *(tile++), 8);
+				dest += 8;
+				cnt -= 8;
+			}
+		}
+
+		// window scan color
+		if (WX < 160)
+		{
+			int cnt = 160 - WX;
+			int *tile = lcd.WND;
+			byte *dest = lcd.BUF + WX;
+			byte *src;
+
+			while (cnt >= 0)
+			{
+				src = get_patpix(*(tile++), lcd.WV);
+				blendcpy(dest, src, *(tile++), 8);
+				dest += 8;
+				cnt -= 8;
+			}
+		}
+
+		// bg priority rescan
+		if (NS && WX > 0)
+		{
+			int cnt = WX;
+			int i = lcd.S;
+			byte *dest = lcd.PRI;
+			byte *src = lcd.vbank[1] + ((R_LCDC&0x08)?0x1C00:0x1800) + (lcd.T<<5);
+
+			if (priused(src))
+			{
+				memset(dest, src[i++&31]&128, 8-lcd.U);
+				dest += 8-lcd.U;
+				cnt -= 8-lcd.U;
+
+				while (cnt >= 8)
+				{
+					memset(dest, src[i++&31]&128, 8);
+					dest += 8;
+					cnt -= 8;
+				}
+				if (cnt > 0)
+					memset(dest, src[i&31]&128, cnt);
+			}
+			else
+			{
+				memset(dest, 0, cnt);
+			}
+		}
+
+		// window priority rescan
+		if (NS && WX < 160)
+		{
+			int cnt = 160 - WX;
+			int i = 0;
+			byte *dest = lcd.PRI + WX;
+			byte *src = lcd.vbank[1] + ((R_LCDC&0x40)?0x1C00:0x1800) + (lcd.WT<<5);
+
+			if (priused(src))
+			{
+				while (cnt >= 8)
+				{
+					memset(dest, src[i++]&128, 8);
+					dest += 8;
+					cnt -= 8;
+				}
+				if (cnt > 0)
+					memset(dest, src[i]&128, cnt);
+			}
+			else
+			{
+				memset(dest, 0, cnt);
+			}
 		}
 	}
 	else
 	{
-		bg_scan();
-		wnd_scan();
+		// bg scan
+		if (WX > 0)
+		{
+			int cnt = WX;
+			int *tile = lcd.BG;
+			byte *dest = lcd.BUF;
+			byte *src = get_patpix(*(tile++), lcd.V) + lcd.U;
+
+			memcpy(dest, src, 8-lcd.U);
+			dest += 8-lcd.U;
+			cnt -= 8-lcd.U;
+
+			while (cnt >= 0)
+			{
+				src = get_patpix(*(tile++), lcd.V);
+				memcpy(dest, src, 8);
+				dest += 8;
+				cnt -= 8;
+			}
+		}
+
+		// window scan
+		if (WX < 160)
+		{
+			int cnt = 160 - WX;
+			int *tile = lcd.WND;
+			byte *dest = lcd.BUF + WX;
+			byte *src;
+
+			while (cnt >= 0)
+			{
+				src = get_patpix(*(tile++), lcd.WV);
+				memcpy(dest, src, 8);
+				dest += 8;
+				cnt -= 8;
+			}
+		}
 		blendcpy(lcd.BUF+WX, lcd.BUF+WX, 0x04, 160-WX);
 	}
 
-	spr_scan(NS);
+	// Sprites scan
+	byte bgdup[256];
+
+	memcpy(bgdup, lcd.BUF, 256);
+
+	for (int ns = NS; ns > 0; --ns)
+	{
+		gb_vs_t *vs = &lcd.VS[ns-1];
+		int pal = vs->pal;
+		int x = vs->x;
+		int i, b;
+
+		if (x >= 160 || x <= -8)
+			continue;
+
+		byte *src = get_patpix(vs->pat, vs->v);
+		byte *dest = lcd.BUF;
+
+		if (x < 0)
+		{
+			src -= x;
+			i = 8 + x;
+		}
+		else
+		{
+			dest += x;
+			if (x > 152) i = 160 - x;
+			else i = 8;
+		}
+
+		if (vs->pri)
+		{
+			byte *bg = bgdup + (dest - lcd.BUF);
+			while (i--)
+			{
+				b = src[i];
+				if (b && !(bg[i]&3)) dest[i] = pal|b;
+			}
+		}
+		else if (hw.hwtype == GB_HW_CGB)
+		{
+			byte *bg = bgdup + (dest - lcd.BUF);
+			byte *pri = lcd.PRI + (dest - lcd.BUF);
+			while (i--)
+			{
+				b = src[i];
+				if (b && (!pri[i] || !(bg[i]&3)))
+					dest[i] = pal|b;
+			}
+		}
+		else
+		{
+			while (i--) if (src[i]) dest[i] = pal|src[i];
+		}
+	}
 
 	if (host.lcd.format == GB_PIXEL_PALETTED)
 	{
@@ -783,7 +793,7 @@ void lcd_emulate(int cycles)
 				stat_change(0);
 				/* FIXME: check docs; HDMA might require operating LCDC */
 				if (hw.hdma & 0x80)
-					lcd_hdma_cont();
+					hw_hdma(-1);
 				else
 					lcd.cycles += 102;
 				break;
@@ -860,7 +870,7 @@ void lcd_emulate(int cycles)
 			/* transfer -> */
 			stat_change(0); /* -> hblank */
 			if (hw.hdma & 0x80)
-				lcd_hdma_cont();
+				hw_hdma(-1);
 			/* FIXME -- how much of the hblank does hdma use?? */
 			/* else */
 			lcd.cycles += 102;
@@ -1264,203 +1274,6 @@ static void sound_write(byte r, byte b)
 
 /******************* END SOUND *******************/
 
-/*
- * hw_interrupt changes the virtual interrupt line(s) defined by i
- * The interrupt fires (added to R_IF) when the line transitions from 0 to 1.
- * It does not refire if the line was already high.
- */
-static void hw_interrupt(byte i, int level)
-{
-	if (level == 0)
-	{
-		hw.interrupts &= ~i;
-	}
-	else if ((hw.interrupts & i) == 0)
-	{
-		hw.interrupts |= i;
-		R_IF |= i; // Fire!
-
-		if ((R_IE & i) != 0)
-		{
-			// Wake up the CPU when an enabled interrupt occurs
-			// IME doesn't matter at this point, only IE
-			cpu.halted = 0;
-		}
-	}
-}
-
-
-void hw_emulate(int cycles)
-{
-	if (hw.serial > 0)
-	{
-		hw.serial -= cycles << 1;
-		if (hw.serial <= 0)
-		{
-			R_SB = 0xFF;
-			R_SC &= 0x7f;
-			hw.serial = 0;
-			hw_interrupt(IF_SERIAL, 1);
-			hw_interrupt(IF_SERIAL, 0);
-		}
-	}
-
-	// static inline void timer_advance(int cycles)
-	{
-		hw.timer_div += (cycles << 2);
-
-		R_DIV += (hw.timer_div >> 8);
-
-		hw.timer_div &= 0xff;
-
-		if (R_TAC & 0x04)
-		{
-			hw.timer += (cycles << ((((-R_TAC) & 3) << 1) + 1));
-
-			if (hw.timer >= 512)
-			{
-				int tima = R_TIMA + (hw.timer >> 9);
-				hw.timer &= 0x1ff;
-				if (tima >= 256)
-				{
-					hw_interrupt(IF_TIMER, 1);
-					hw_interrupt(IF_TIMER, 0);
-					tima = R_TMA;
-				}
-				R_TIMA = tima;
-			}
-		}
-	}
-
-	if (!cpu.double_speed)
-		cycles <<= 1;
-
-	lcd_emulate(cycles);
-	snd.cycles += cycles; // sound_emulate(cycles);
-}
-
-
-static void hw_hdma(byte c)
-{
-	/* Begin or cancel HDMA */
-	if ((hw.hdma|c) & 0x80)
-	{
-		hw.hdma = c;
-		R_HDMA5 = c & 0x7f;
-		return;
-	}
-
-	/* Perform GDMA */
-	uint src = (R_HDMA1 << 8) | (R_HDMA2 & 0xF0);
-	uint dst = 0x8000 | ((R_HDMA3 & 0x1F) << 8) | (R_HDMA4 & 0xF0);
-	uint cnt = c + 1;
-
-	/* FIXME - this should use cpu time! */
-	/*cpu_timers(102 * cnt);*/
-
-	cnt <<= 4;
-
-	while (cnt--)
-		writeb(dst++, readb(src++));
-
-	R_HDMA1 = src >> 8;
-	R_HDMA2 = src & 0xF0;
-	R_HDMA3 = (dst >> 8) & 0x1F;
-	R_HDMA4 = dst & 0xF0;
-	R_HDMA5 = 0xFF;
-}
-
-/*
- * pad_refresh updates the P1 register from the pad states, generating
- * the appropriate interrupts (by quickly raising and lowering the
- * interrupt line) if a transition has been made.
- */
-static inline void pad_refresh()
-{
-	byte oldp1 = R_P1;
-	R_P1 &= 0x30;
-	R_P1 |= 0xc0;
-	if (!(R_P1 & 0x10)) R_P1 |= (hw.joypad & 0x0F);
-	if (!(R_P1 & 0x20)) R_P1 |= (hw.joypad >> 4);
-	R_P1 ^= 0x0F;
-	if (oldp1 & ~R_P1 & 0x0F)
-	{
-		hw_interrupt(IF_PAD, 1);
-		hw_interrupt(IF_PAD, 0);
-	}
-}
-
-/*
- * Refresh our virtual peripherals according to the registers.
- * Registers can change from external sources for saving/loading, for example.
- */
-static void hw_refresh(void)
-{
-	lcd_rebuildpal();
-	sound_dirty();
-	hw_updatemap();
-}
-
-/*
- * In order to make reads and writes efficient, we keep tables
- * (indexed by the high nibble of the address) specifying which
- * regions can be read/written without a function call. For such
- * ranges, the pointer in the map table points to the base of the
- * region in host system memory. For ranges that require special
- * processing, the pointer is NULL.
- *
- * hw_updatemap is called whenever bank changes or other operations
- * make the old maps potentially invalid.
- */
-static void hw_updatemap(void)
-{
-	int rombank = cart.rombank & (cart.romsize - 1);
-
-	if (cart.rombanks[rombank] == NULL)
-	{
-		gnuboy_load_bank(rombank);
-	}
-
-	// ROM
-	hw.rmap[0x0] = cart.rombanks[0];
-	hw.rmap[0x1] = cart.rombanks[0];
-	hw.rmap[0x2] = cart.rombanks[0];
-	hw.rmap[0x3] = cart.rombanks[0];
-
-	// Force bios to go through hw_read (speed doesn't really matter here)
-	if (hw.bios && (R_BIOS & 1) == 0)
-	{
-		hw.rmap[0x0] = NULL;
-	}
-
-	// Cartridge ROM
-	hw.rmap[0x4] = cart.rombanks[rombank] - 0x4000;
-	hw.rmap[0x5] = hw.rmap[0x4];
-	hw.rmap[0x6] = hw.rmap[0x4];
-	hw.rmap[0x7] = hw.rmap[0x4];
-
-	// Video RAM
-	hw.rmap[0x8] = hw.wmap[0x8] = lcd.vbank[R_VBK & 1] - 0x8000;
-	hw.rmap[0x9] = hw.wmap[0x9] = lcd.vbank[R_VBK & 1] - 0x8000;
-
-	// Cartridge RAM
-	hw.rmap[0xA] = hw.wmap[0xA] = NULL;
-	hw.rmap[0xB] = hw.wmap[0xB] = NULL;
-
-	// Work RAM
-	hw.rmap[0xC] = hw.wmap[0xC] = hw.rambanks[0] - 0xC000;
-
-	// Work RAM (GBC)
-	if (hw.hwtype == GB_HW_CGB)
-		hw.rmap[0xD] = hw.wmap[0xD] = hw.rambanks[(R_SVBK & 0x7) ?: 1] - 0xD000;
-
-	// Mirror of 0xC000
-	hw.rmap[0xE] = hw.wmap[0xE] = hw.rambanks[0] - 0xE000;
-
-	// IO port and registers
-	hw.rmap[0xF] = hw.wmap[0xF] = NULL;
-}
-
 
 /*
  * Memory bank controllers typically intercept write attempts to
@@ -1590,6 +1403,68 @@ static inline void mbc_write(uint a, byte b)
 	MESSAGE_DEBUG("%02X\n", cart.rombank);
 
 	hw_updatemap();
+}
+
+
+/*
+ * Refresh our virtual peripherals according to the registers.
+ * Registers can change from external sources for saving/loading, for example.
+ */
+static void hw_refresh(void)
+{
+	lcd_rebuildpal();
+	sound_dirty();
+	hw_updatemap();
+}
+
+
+void hw_emulate(int cycles)
+{
+	if (hw.serial > 0)
+	{
+		hw.serial -= cycles << 1;
+		if (hw.serial <= 0)
+		{
+			R_SB = 0xFF;
+			R_SC &= 0x7f;
+			hw.serial = 0;
+			hw_interrupt(IF_SERIAL, 1);
+			hw_interrupt(IF_SERIAL, 0);
+		}
+	}
+
+	// static inline void timer_advance(int cycles)
+	{
+		hw.timer_div += (cycles << 2);
+
+		R_DIV += (hw.timer_div >> 8);
+
+		hw.timer_div &= 0xff;
+
+		if (R_TAC & 0x04)
+		{
+			hw.timer += (cycles << ((((-R_TAC) & 3) << 1) + 1));
+
+			if (hw.timer >= 512)
+			{
+				int tima = R_TIMA + (hw.timer >> 9);
+				hw.timer &= 0x1ff;
+				if (tima >= 256)
+				{
+					hw_interrupt(IF_TIMER, 1);
+					hw_interrupt(IF_TIMER, 0);
+					tima = R_TMA;
+				}
+				R_TIMA = tima;
+			}
+		}
+	}
+
+	if (!cpu.double_speed)
+		cycles <<= 1;
+
+	lcd_emulate(cycles);
+	snd.cycles += cycles; // sound_emulate(cycles);
 }
 
 
@@ -1739,8 +1614,12 @@ void hw_write(uint a, byte b)
 				REG(r) = b & 0x1F;
 				break;
 			case RI_P1:
-				REG(r) = b;
-				pad_refresh();
+				R_P1 = (b & 0x30) | 0xC0;
+				if (!(R_P1 & 0x10)) R_P1 |= (hw.joypad & 0x0F);
+				if (!(R_P1 & 0x20)) R_P1 |= (hw.joypad >> 4);
+				R_P1 ^= 0x0F;
+				// Skipping the interrupt doesn't seem to cause much issue
+				// Not sure it should even trigger from here?
 				break;
 			case RI_SC:
 				if ((b & 0x81) == 0x81)
@@ -1756,7 +1635,17 @@ void hw_write(uint a, byte b)
 				REG(r) = 0;
 				break;
 			case RI_LCDC:
-				lcd_lcdc_change(b);
+				{
+					byte old = R_LCDC;
+					R_LCDC = b;
+					if ((R_LCDC ^ old) & 0x80) /* lcd on/off change */
+					{
+						R_LY = 0;
+						stat_change(2);
+						lcd.cycles = 40;  // Correct value seems to be 38
+						lcd.WY = R_WY;
+					}
+				}
 				break;
 			case RI_STAT:
 				R_STAT = (R_STAT & 0x07) | (b & 0x78);
@@ -1796,7 +1685,8 @@ void hw_write(uint a, byte b)
 				break;
 			case RI_DMA:
 				for (size_t a = (size_t)b << 8, i = 0; i < 160; i++, a++)
-					lcd.oam.mem[i] = readb(a);
+					// just called hw_read(a) should be fine instead...
+					lcd.oam.mem[i] = ({byte *p = hw.rmap[a>>12]; p ? p[a] : hw_read(a);});
 				break;
 			case RI_KEY1:
 				REG(r) = (REG(r) & 0x80) | (b & 0x01);
@@ -2044,7 +1934,8 @@ void gnuboy_set_pad(uint pad)
 	if (hw.joypad != pad)
 	{
 		hw.joypad = pad & 0xFF;
-		pad_refresh();
+		hw_interrupt(IF_PAD, 1);
+		hw_interrupt(IF_PAD, 0);
 	}
 }
 
