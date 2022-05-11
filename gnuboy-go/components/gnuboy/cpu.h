@@ -47,12 +47,8 @@ typedef union
 typedef struct
 {
 	cpu_reg_t pc, sp, bc, de, hl, af;
-
-	un32 timer, div;
 	un32 ime, ima;
-	un32 halted;
-	un32 double_speed;
-	un32 disassemble;
+	bool halted, double_speed;
 } cpu_t;
 
 extern cpu_t cpu;

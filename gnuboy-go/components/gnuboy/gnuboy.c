@@ -3,7 +3,7 @@
 #include <malloc.h>
 #include <string.h>
 #include "gnuboy.h"
-#include "hw.h"
+#include "regs.h"
 #include "cpu.h"
 #include "tables/snd.h"
 #include "tables/lcd.h"
@@ -14,6 +14,23 @@ gb_cart_t cart;
 gb_hw_t hw;
 gb_snd_t snd;
 gb_lcd_t lcd;
+
+static void hw_interrupt(byte i, int level);
+
+
+static inline byte readb(uint a)
+{
+	byte *p = hw.rmap[a>>12];
+	if (p) return p[a];
+	return hw_read(a);
+}
+
+static inline void writeb(uint a, byte b)
+{
+	byte *p = hw.wmap[a>>12];
+	if (p) p[a] = b;
+	else hw_write(a, b);
+}
 
 
 static void hw_updatemap(void);
@@ -561,6 +578,14 @@ static void lcd_reset(bool hard)
 	lcd.WY = R_WY;
 
 	lcd_rebuildpal();
+
+	/* set lcdc ahead of cpu by 19us; see A
+			Set lcdc ahead of cpu by 19us (matches minimal hblank duration according
+			to some docs). Value from lcd.cycles (when positive) is used to drive CPU,
+			setting some ahead-time at startup is necessary to begin emulation.
+	FIXME: leave value at 0, use lcd_emulate() to actually send lcdc ahead
+	*/
+	lcd.cycles = 40;
 }
 
 /*
@@ -1239,88 +1264,12 @@ static void sound_write(byte r, byte b)
 
 /******************* END SOUND *******************/
 
-
-/******************* BEGIN RTC *******************/
-
-static void rtc_latch(byte b)
-{
-	if ((cart.rtc.latch ^ b) & b & 1)
-	{
-		cart.rtc.regs[0] = cart.rtc.s;
-		cart.rtc.regs[1] = cart.rtc.m;
-		cart.rtc.regs[2] = cart.rtc.h;
-		cart.rtc.regs[3] = cart.rtc.d;
-		cart.rtc.regs[4] = cart.rtc.flags;
-	}
-	cart.rtc.latch = b & 1;
-}
-
-
-static void rtc_write(byte b)
-{
-	switch (cart.rtc.sel & 0xf)
-	{
-	case 0x8: // Seconds
-		cart.rtc.regs[0] = b;
-		cart.rtc.s = b % 60;
-		break;
-	case 0x9: // Minutes
-		cart.rtc.regs[1] = b;
-		cart.rtc.m = b % 60;
-		break;
-	case 0xA: // Hours
-		cart.rtc.regs[2] = b;
-		cart.rtc.h = b % 24;
-		break;
-	case 0xB: // Days (lower 8 bits)
-		cart.rtc.regs[3] = b;
-		cart.rtc.d = ((cart.rtc.d & 0x100) | b) % 365;
-		break;
-	case 0xC: // Flags (days upper 1 bit, carry, stop)
-		cart.rtc.regs[4] = b;
-		cart.rtc.flags = b;
-		cart.rtc.d = ((cart.rtc.d & 0xff) | ((b&1)<<9)) % 365;
-		break;
-	}
-}
-
-
-static void rtc_tick()
-{
-	if ((cart.rtc.flags & 0x40))
-		return; // rtc stop
-
-	if (++cart.rtc.ticks >= 60)
-	{
-		if (++cart.rtc.s >= 60)
-		{
-			if (++cart.rtc.m >= 60)
-			{
-				if (++cart.rtc.h >= 24)
-				{
-					if (++cart.rtc.d >= 365)
-					{
-						cart.rtc.d = 0;
-						cart.rtc.flags |= 0x80;
-					}
-					cart.rtc.h = 0;
-				}
-				cart.rtc.m = 0;
-			}
-			cart.rtc.s = 0;
-		}
-		cart.rtc.ticks = 0;
-	}
-}
-
-/******************* END RTC *******************/
-
 /*
  * hw_interrupt changes the virtual interrupt line(s) defined by i
  * The interrupt fires (added to R_IF) when the line transitions from 0 to 1.
  * It does not refire if the line was already high.
  */
-void hw_interrupt(byte i, int level)
+static void hw_interrupt(byte i, int level)
 {
 	if (level == 0)
 	{
@@ -1341,17 +1290,53 @@ void hw_interrupt(byte i, int level)
 }
 
 
-/*
- * hw_dma performs plain old memory-to-oam dma, the original dmg
- * dma. Although on the hardware it takes a good deal of time, the cpu
- * continues running during this mode of dma, so no special tricks to
- * stall the cpu are necessary.
- */
-static void hw_dma(uint b)
+void hw_emulate(int cycles)
 {
-	uint a = b << 8;
-	for (int i = 0; i < 160; i++, a++)
-		lcd.oam.mem[i] = readb(a);
+	if (hw.serial > 0)
+	{
+		hw.serial -= cycles << 1;
+		if (hw.serial <= 0)
+		{
+			R_SB = 0xFF;
+			R_SC &= 0x7f;
+			hw.serial = 0;
+			hw_interrupt(IF_SERIAL, 1);
+			hw_interrupt(IF_SERIAL, 0);
+		}
+	}
+
+	// static inline void timer_advance(int cycles)
+	{
+		hw.timer_div += (cycles << 2);
+
+		R_DIV += (hw.timer_div >> 8);
+
+		hw.timer_div &= 0xff;
+
+		if (R_TAC & 0x04)
+		{
+			hw.timer += (cycles << ((((-R_TAC) & 3) << 1) + 1));
+
+			if (hw.timer >= 512)
+			{
+				int tima = R_TIMA + (hw.timer >> 9);
+				hw.timer &= 0x1ff;
+				if (tima >= 256)
+				{
+					hw_interrupt(IF_TIMER, 1);
+					hw_interrupt(IF_TIMER, 0);
+					tima = R_TMA;
+				}
+				R_TIMA = tima;
+			}
+		}
+	}
+
+	if (!cpu.double_speed)
+		cycles <<= 1;
+
+	lcd_emulate(cycles);
+	snd.cycles += cycles; // sound_emulate(cycles);
 }
 
 
@@ -1538,7 +1523,15 @@ static inline void mbc_write(uint a, byte b)
 			cart.rambank = b & 0x03;
 			break;
 		case 0x6000:
-			rtc_latch(b);
+			if ((cart.rtc.latch ^ b) & b & 1)
+			{
+				cart.rtc.regs[0] = cart.rtc.s;
+				cart.rtc.regs[1] = cart.rtc.m;
+				cart.rtc.regs[2] = cart.rtc.h;
+				cart.rtc.regs[3] = cart.rtc.d;
+				cart.rtc.regs[4] = cart.rtc.flags;
+			}
+			cart.rtc.latch = b & 1;
 			break;
 		}
 		break;
@@ -1628,7 +1621,30 @@ void hw_write(uint a, byte b)
 
 		if (cart.rtc.sel & 8)
 		{
-			rtc_write(b);
+			switch (cart.rtc.sel & 0xf)
+			{
+			case 0x8: // Seconds
+				cart.rtc.regs[0] = b;
+				cart.rtc.s = b % 60;
+				break;
+			case 0x9: // Minutes
+				cart.rtc.regs[1] = b;
+				cart.rtc.m = b % 60;
+				break;
+			case 0xA: // Hours
+				cart.rtc.regs[2] = b;
+				cart.rtc.h = b % 24;
+				break;
+			case 0xB: // Days (lower 8 bits)
+				cart.rtc.regs[3] = b;
+				cart.rtc.d = ((cart.rtc.d & 0x100) | b) % 365;
+				break;
+			case 0xC: // Flags (days upper 1 bit, carry, stop)
+				cart.rtc.regs[4] = b;
+				cart.rtc.flags = b;
+				cart.rtc.d = ((cart.rtc.d & 0xff) | ((b&1)<<9)) % 365;
+				break;
+			}
 		}
 		else
 		{
@@ -1779,7 +1795,8 @@ void hw_write(uint a, byte b)
 				hw_updatemap();
 				break;
 			case RI_DMA:
-				hw_dma(b);
+				for (size_t a = (size_t)b << 8, i = 0; i < 160; i++, a++)
+					lcd.oam.mem[i] = readb(a);
 				break;
 			case RI_KEY1:
 				REG(r) = (REG(r) & 0x80) | (b & 0x01);
@@ -1887,38 +1904,6 @@ byte hw_read(uint a)
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 int gnuboy_init(int samplerate, bool stereo, int pixformat, void *vblank_func)
 {
 	host.snd.samplerate = samplerate;
@@ -1940,12 +1925,21 @@ int gnuboy_init(int samplerate, bool stereo, int pixformat, void *vblank_func)
  */
 void gnuboy_reset(bool hard)
 {
+	memset(hw.ioregs, 0, sizeof(hw.ioregs));
+	memset(hw.rmap, 0, sizeof(hw.rmap));
+	memset(hw.wmap, 0, sizeof(hw.wmap));
 	hw.interrupts = 0;
 	hw.joypad = 0;
 	hw.serial = 0;
 	hw.hdma = 0;
+	hw.timer = 0;
+	hw.timer_div = 0;
+	cart.sram_dirty = 0;
+	cart.bankmode = 0;
+	cart.rombank = 1;
+	cart.rambank = 0;
+	cart.enableram = 0;
 
-	memset(hw.ioregs, 0, sizeof(hw.ioregs));
 	R_P1 = 0xFF;
 	R_LCDC = 0x91;
 	R_BGP = 0xFC;
@@ -1962,14 +1956,6 @@ void gnuboy_reset(bool hard)
 		memset(&cart.rtc, 0, sizeof(cart.rtc));
 	}
 
-	memset(hw.rmap, 0, sizeof(hw.rmap));
-	memset(hw.wmap, 0, sizeof(hw.wmap));
-
-	cart.sram_dirty = 0;
-	cart.bankmode = 0;
-	cart.rombank = 1;
-	cart.rambank = 0;
-	cart.enableram = 0;
 	hw_updatemap();
 
 	lcd_reset(hard);
@@ -2016,7 +2002,32 @@ void gnuboy_run(bool draw)
 
 	/* Sync hardware */
 	sound_emulate();
-	rtc_tick();
+
+	/* rtc tick */
+	if (!(cart.rtc.flags & 0x40))
+	{
+		if (++cart.rtc.ticks >= 60)
+		{
+			if (++cart.rtc.s >= 60)
+			{
+				if (++cart.rtc.m >= 60)
+				{
+					if (++cart.rtc.h >= 24)
+					{
+						if (++cart.rtc.d >= 365)
+						{
+							cart.rtc.d = 0;
+							cart.rtc.flags |= 0x80;
+						}
+						cart.rtc.h = 0;
+					}
+					cart.rtc.m = 0;
+				}
+				cart.rtc.s = 0;
+			}
+			cart.rtc.ticks = 0;
+		}
+	}
 
 	/* LCDC operation stopped */
 	if (!(R_LCDC & 0x80))
@@ -2456,8 +2467,8 @@ static const svar_t svars[] =
 	I4("ima ", &cpu.ima),
 	I4("spd ", &cpu.double_speed),
 	I4("halt", &cpu.halted),
-	I4("div ", &cpu.div),
-	I4("tim ", &cpu.timer),
+	I4("div ", &hw.timer_div),
+	I4("tim ", &hw.timer),
 	I4("lcdc", &lcd.cycles),
 	I4("snd ", &snd.cycles),
 

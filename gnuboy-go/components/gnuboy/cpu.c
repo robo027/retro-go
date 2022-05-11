@@ -1,7 +1,56 @@
 #include "gnuboy.h"
-#include "hw.h"
+#include "regs.h"
 #include "cpu.h"
 #include "tables/cpu.h"
+
+
+static inline byte readb(uint a)
+{
+	byte *p = hw.rmap[a>>12];
+	if (p) return p[a];
+	return hw_read(a);
+}
+
+static inline void writeb(uint a, byte b)
+{
+	byte *p = hw.wmap[a>>12];
+	if (p) p[a] = b;
+	else hw_write(a, b);
+}
+
+static inline un16 readw(uint a)
+{
+	if ((a & 0xFFF) == 0xFFF) // Page crossing
+	{
+		return readb(a) | (readb(a + 1) << 8);
+	}
+	byte *p = hw.rmap[a >> 12];
+	if (p)
+	{
+		return *(un16 *)(p + a);
+	}
+	return hw_read(a) | (hw_read(a + 1) << 8);
+}
+
+static inline void writew(uint a, un16 w)
+{
+	if ((a & 0xFFF) == 0xFFF) // Page crossing
+	{
+		writeb(a, w);
+		writeb(a + 1, w >> 8);
+		return;
+	}
+	byte *p = hw.wmap[a >> 12];
+	if (p)
+	{
+		*(un16 *)(p + a) = w;
+		return;
+	}
+	hw_write(a, w);
+	hw_write(a + 1, w >> 8);
+}
+
+
 
 // For cycle accurate emulation this needs to be 1
 // Anything above 10 have diminishing returns
@@ -99,7 +148,7 @@ A = LB(acc); }
 #define RET ( POP(PC) )
 
 #define EI ( IMA = 1 )
-#define DI ( cpu.halted = IMA = IME = 0 )
+#define DI ( IMA = IME = cpu.halted =  0 )
 
 #define COND_EXEC_INT(i, n) if (temp & i) { DI; PUSH(PC); R_IF &= ~i; PC = 0x40+((n)<<3); clen = 5; goto _skip; }
 
@@ -158,70 +207,14 @@ void cpu_reset(bool hard)
 {
 	cpu.double_speed = 0;
 	cpu.halted = 0;
-	cpu.div = 0;
-	cpu.timer = 0;
-	/* set lcdc ahead of cpu by 19us; see A
-			Set lcdc ahead of cpu by 19us (matches minimal hblank duration according
-			to some docs). Value from lcd.cycles (when positive) is used to drive CPU,
-			setting some ahead-time at startup is necessary to begin emulation.
-	FIXME: leave value at 0, use lcd_emulate() to actually send lcdc ahead
-	*/
-	lcd.cycles = 40;
-
 	IME = 0;
 	IMA = 0;
-
 	PC = hw.bios ? 0x0000 : 0x0100;
 	SP = 0xFFFE;
 	AF = (hw.hwtype == GB_HW_CGB) ? 0x11B0 : 0x01B0;
 	BC = 0x0013;
 	DE = 0x00D8;
 	HL = 0x014D;
-}
-
-/* cnt - time to emulate, expressed in real clock cycles */
-static inline void timer_advance(int cycles)
-{
-	cpu.div += (cycles << 2);
-
-	R_DIV += (cpu.div >> 8);
-
-	cpu.div &= 0xff;
-
-	if (R_TAC & 0x04)
-	{
-		cpu.timer += (cycles << ((((-R_TAC) & 3) << 1) + 1));
-
-		if (cpu.timer >= 512)
-		{
-			int tima = R_TIMA + (cpu.timer >> 9);
-			cpu.timer &= 0x1ff;
-			if (tima >= 256)
-			{
-				hw_interrupt(IF_TIMER, 1);
-				hw_interrupt(IF_TIMER, 0);
-				tima = R_TMA;
-			}
-			R_TIMA = tima;
-		}
-	}
-}
-
-/* cnt - time to emulate, expressed in real clock cycles */
-static inline void serial_advance(int cycles)
-{
-	if (hw.serial > 0)
-	{
-		hw.serial -= cycles << 1;
-		if (hw.serial <= 0)
-		{
-			R_SB = 0xFF;
-			R_SC &= 0x7f;
-			hw.serial = 0;
-			hw_interrupt(IF_SERIAL, 1);
-			hw_interrupt(IF_SERIAL, 0);
-		}
-	}
 }
 
 /* cpu_emulate()
@@ -748,21 +741,7 @@ _skip:
 	if (count >= COUNTERS_TICK_PERIOD || remaining <= 0)
 #endif
 	{
-		/* Advance clock-bound counters */
-		timer_advance(count);
-		serial_advance(count);
-
-		if (!cpu.double_speed)
-			count <<= 1;
-
-		/* Advance fixed-speed counters */
-		lcd_emulate(count);
-		snd.cycles += count;
-		// sound_emulate(count);
-
-		// Here we could calculate when the next event is going to happen
-		// So that we can skip even more cycles, but it doesn't seem to save
-		// much more CPU and adds lots of complexity...
+		hw_emulate(count);
 		count = 0;
 	}
 
