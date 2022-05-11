@@ -25,7 +25,6 @@ typedef uint8_t byte;
 typedef uint8_t un8;
 typedef uint16_t un16;
 typedef uint32_t un32;
-typedef uint64_t un64;
 typedef int8_t n8;
 typedef int16_t n16;
 typedef int32_t n32;
@@ -79,7 +78,6 @@ int  gnuboy_load_rom(const char *file);
 void gnuboy_free_rom(void);
 void gnuboy_reset(bool hard);
 void gnuboy_run(bool draw);
-bool gnuboy_sram_dirty(void);
 void gnuboy_load_bank(int);
 void gnuboy_set_pad(uint);
 
@@ -89,3 +87,9 @@ int  gnuboy_get_hwtype(void);
 void gnuboy_set_hwtype(gb_hwtype_t type);
 int  gnuboy_get_palette(void);
 void gnuboy_set_palette(gb_palette_t pal);
+
+bool gnuboy_sram_dirty(void);
+int gnuboy_sram_load(const char *file);
+int gnuboy_sram_save(const char *file, bool quick_save);
+int gnuboy_state_load(const char *file);
+int gnuboy_state_save(const char *file);

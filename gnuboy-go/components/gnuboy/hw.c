@@ -1,87 +1,1329 @@
 #include <string.h>
+#include <malloc.h>
 #include "gnuboy.h"
-#include "sound.h"
 #include "cpu.h"
 #include "hw.h"
-#include "lcd.h"
+#include "tables/snd.h"
+#include "tables/lcd.h"
 
 gb_cart_t cart;
-gb_rtc_t rtc;
 gb_hw_t hw;
+gb_snd_t snd;
+gb_lcd_t lcd;
 
+
+/******************* BEGIN LCD *******************/
+
+#define WX lcd.WX
+#define WY lcd.WY
+#define priused(attr) ({un32 *a = (un32*)(attr); (int)((a[0]|a[1]|a[2]|a[3]|a[4]|a[5]|a[6]|a[7])&0x80808080);})
+#define blendcpy(dest, src, b, cnt) {					\
+	byte *s = (src), *d = (dest), _b = (b), c = (cnt); 	\
+	while(c--) *(d + c) = *(s + c) | _b; 				\
+}
+
+__attribute__((optimize("unroll-loops")))
+static inline byte *get_patpix(int tile, int x)
+{
+	const byte *vram = lcd.vbank[0];
+	static byte pix[8];
+
+	if (tile & (1 << 11)) // Vertical Flip
+		vram += ((tile & 0x3FF) << 4) | ((7 - x) << 1);
+	else
+		vram += ((tile & 0x3FF) << 4) | (x << 1);
+
+	if (tile & (1 << 10)) // Horizontal Flip
+		for (int k = 0; k < 8; ++k)
+		{
+			pix[k] = ((vram[0] >> k) & 1) | (((vram[1] >> k) & 1) << 1);
+		}
+	else
+		for (int k = 0; k < 8; ++k)
+		{
+			pix[7 - k] = ((vram[0] >> k) & 1) | (((vram[1] >> k) & 1) << 1);
+		}
+
+	return pix;
+}
+
+static inline void tilebuf()
+{
+	int cnt, base;
+	byte *tilemap, *attrmap;
+	int *tilebuf;
+
+	/* Background tiles */
+
+	const int8_t wraptable[64] = {
+		0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+		0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,-32
+	};
+	const int8_t *wrap = wraptable + lcd.S;
+
+	base = ((R_LCDC&0x08)?0x1C00:0x1800) + (lcd.T<<5) + lcd.S;
+	tilemap = lcd.vbank[0] + base;
+	attrmap = lcd.vbank[1] + base;
+	tilebuf = lcd.BG;
+	cnt = ((WX + 7) >> 3) + 1;
+
+	if (hw.hwtype == GB_HW_CGB)
+	{
+		if (R_LCDC & 0x10)
+			for (int i = cnt; i > 0; i--)
+			{
+				*(tilebuf++) = *tilemap
+					| (((int)*attrmap & 0x08) << 6)
+					| (((int)*attrmap & 0x60) << 5);
+				*(tilebuf++) = (((int)*attrmap & 0x07) << 2);
+				attrmap += *wrap + 1;
+				tilemap += *(wrap++) + 1;
+			}
+		else
+			for (int i = cnt; i > 0; i--)
+			{
+				*(tilebuf++) = (0x100 + ((n8)*tilemap))
+					| (((int)*attrmap & 0x08) << 6)
+					| (((int)*attrmap & 0x60) << 5);
+				*(tilebuf++) = (((int)*attrmap & 0x07) << 2);
+				attrmap += *wrap + 1;
+				tilemap += *(wrap++) + 1;
+			}
+	}
+	else
+	{
+		if (R_LCDC & 0x10)
+			for (int i = cnt; i > 0; i--)
+			{
+				*(tilebuf++) = *(tilemap++);
+				tilemap += *(wrap++);
+			}
+		else
+			for (int i = cnt; i > 0; i--)
+			{
+				*(tilebuf++) = (0x100 + ((n8)*(tilemap++)));
+				tilemap += *(wrap++);
+			}
+	}
+
+	if (WX >= 160) return;
+
+	/* Window tiles */
+
+	base = ((R_LCDC&0x40)?0x1C00:0x1800) + (lcd.WT<<5);
+	tilemap = lcd.vbank[0] + base;
+	attrmap = lcd.vbank[1] + base;
+	tilebuf = lcd.WND;
+	cnt = ((160 - WX) >> 3) + 1;
+
+	if (hw.hwtype == GB_HW_CGB)
+	{
+		if (R_LCDC & 0x10)
+			for (int i = cnt; i > 0; i--)
+			{
+				*(tilebuf++) = *(tilemap++)
+					| (((int)*attrmap & 0x08) << 6)
+					| (((int)*attrmap & 0x60) << 5);
+				*(tilebuf++) = (((int)*(attrmap++)&0x7) << 2);
+			}
+		else
+			for (int i = cnt; i > 0; i--)
+			{
+				*(tilebuf++) = (0x100 + ((n8)*(tilemap++)))
+					| (((int)*attrmap & 0x08) << 6)
+					| (((int)*attrmap & 0x60) << 5);
+				*(tilebuf++) = (((int)*(attrmap++)&0x7) << 2);
+			}
+	}
+	else
+	{
+		if (R_LCDC & 0x10)
+			for (int i = cnt; i > 0; i--)
+				*(tilebuf++) = *(tilemap++);
+		else
+			for (int i = cnt; i > 0; i--)
+				*(tilebuf++) = (0x100 + ((n8)*(tilemap++)));
+	}
+}
+
+static inline void bg_scan()
+{
+	int cnt;
+	byte *src, *dest;
+	int *tile;
+
+	if (WX <= 0) return;
+
+	cnt = WX;
+	tile = lcd.BG;
+	dest = lcd.BUF;
+
+	src = get_patpix(*(tile++), lcd.V) + lcd.U;
+	memcpy(dest, src, 8-lcd.U);
+	dest += 8-lcd.U;
+	cnt -= 8-lcd.U;
+
+	while (cnt >= 0)
+	{
+		src = get_patpix(*(tile++), lcd.V);
+		memcpy(dest, src, 8);
+		dest += 8;
+		cnt -= 8;
+	}
+}
+
+static inline void wnd_scan()
+{
+	int cnt;
+	byte *src, *dest;
+	int *tile;
+
+	cnt = 160 - WX;
+	tile = lcd.WND;
+	dest = lcd.BUF + WX;
+
+	while (cnt >= 0)
+	{
+		src = get_patpix(*(tile++), lcd.WV);
+		memcpy(dest, src, 8);
+		dest += 8;
+		cnt -= 8;
+	}
+}
+
+static inline void bg_scan_pri()
+{
+	int cnt, i;
+	byte *src, *dest;
+
+	if (WX <= 0) return;
+
+	i = lcd.S;
+	cnt = WX;
+	dest = lcd.PRI;
+	src = lcd.vbank[1] + ((R_LCDC&0x08)?0x1C00:0x1800) + (lcd.T<<5);
+
+	if (!priused(src))
+	{
+		memset(dest, 0, cnt);
+		return;
+	}
+
+	memset(dest, src[i++&31]&128, 8-lcd.U);
+	dest += 8-lcd.U;
+	cnt -= 8-lcd.U;
+
+	if (cnt <= 0) return;
+
+	while (cnt >= 8)
+	{
+		memset(dest, src[i++&31]&128, 8);
+		dest += 8;
+		cnt -= 8;
+	}
+	memset(dest, src[i&31]&128, cnt);
+}
+
+static inline void wnd_scan_pri()
+{
+	int cnt, i;
+	byte *src, *dest;
+
+	if (WX >= 160) return;
+
+	i = 0;
+	cnt = 160 - WX;
+	dest = lcd.PRI + WX;
+	src = lcd.vbank[1] + ((R_LCDC&0x40)?0x1C00:0x1800) + (lcd.WT<<5);
+
+	if (!priused(src))
+	{
+		memset(dest, 0, cnt);
+		return;
+	}
+
+	while (cnt >= 8)
+	{
+		memset(dest, src[i++]&128, 8);
+		dest += 8;
+		cnt -= 8;
+	}
+
+	memset(dest, src[i]&128, cnt);
+}
+
+static inline void bg_scan_color()
+{
+	int cnt;
+	byte *src, *dest;
+	int *tile;
+
+	if (WX <= 0) return;
+
+	cnt = WX;
+	tile = lcd.BG;
+	dest = lcd.BUF;
+
+	src = get_patpix(*(tile++), lcd.V) + lcd.U;
+	blendcpy(dest, src, *(tile++), 8-lcd.U);
+	dest += 8-lcd.U;
+	cnt -= 8-lcd.U;
+
+	while (cnt >= 0)
+	{
+		src = get_patpix(*(tile++), lcd.V);
+		blendcpy(dest, src, *(tile++), 8);
+		dest += 8;
+		cnt -= 8;
+	}
+}
+
+static inline void wnd_scan_color()
+{
+	int cnt;
+	byte *src, *dest;
+	int *tile;
+
+	if (WX >= 160) return;
+
+	cnt = 160 - WX;
+	tile = lcd.WND;
+	dest = lcd.BUF + WX;
+
+	while (cnt >= 0)
+	{
+		src = get_patpix(*(tile++), lcd.WV);
+		blendcpy(dest, src, *(tile++), 8);
+		dest += 8;
+		cnt -= 8;
+	}
+}
+
+static inline int spr_enum()
+{
+	if (!(R_LCDC & 0x02))
+		return 0;
+
+	gb_vs_t ts[10];
+	int line = R_LY;
+	int NS = 0;
+
+	for (int i = 0; i < 40; ++i)
+	{
+		gb_obj_t *obj = &lcd.oam.obj[i];
+		int v, pat;
+
+		if (line >= obj->y || line + 16 < obj->y)
+			continue;
+		if (line + 8 >= obj->y && !(R_LCDC & 0x04))
+			continue;
+
+		lcd.VS[NS].x = (int)obj->x - 8;
+		v = line - (int)obj->y + 16;
+
+		if (hw.hwtype == GB_HW_CGB)
+		{
+			pat = obj->pat | (((int)obj->flags & 0x60) << 5)
+				| (((int)obj->flags & 0x08) << 6);
+			lcd.VS[NS].pal = 32 + ((obj->flags & 0x07) << 2);
+		}
+		else
+		{
+			pat = obj->pat | (((int)obj->flags & 0x60) << 5);
+			lcd.VS[NS].pal = 32 + ((obj->flags & 0x10) >> 2);
+		}
+
+		lcd.VS[NS].pri = (obj->flags & 0x80) >> 7;
+
+		if ((R_LCDC & 0x04))
+		{
+			pat &= ~1;
+			if (v >= 8)
+			{
+				v -= 8;
+				pat++;
+			}
+			if (obj->flags & 0x40) pat ^= 1;
+		}
+
+		lcd.VS[NS].pat = pat;
+		lcd.VS[NS].v = v;
+
+		if (++NS == 10) break;
+	}
+
+	// Sort sprites
+	if (hw.hwtype != GB_HW_CGB)
+	{
+		/* not quite optimal but it finally works! */
+		for (int i = 0; i < NS; ++i)
+		{
+			int l = 0;
+			int x = lcd.VS[0].x;
+			for (int j = 1; j < NS; ++j)
+			{
+				if (lcd.VS[j].x < x)
+				{
+					l = j;
+					x = lcd.VS[j].x;
+				}
+			}
+			ts[i] = lcd.VS[l];
+			lcd.VS[l].x = 160;
+		}
+
+		memcpy(lcd.VS, ts, sizeof(ts));
+	}
+
+	return NS;
+}
+
+static inline void spr_scan(int ns)
+{
+	byte *src, *dest, *bg, *pri;
+	int i, b, x, pal;
+	gb_vs_t *vs;
+	byte bgdup[256];
+
+	memcpy(bgdup, lcd.BUF, 256);
+
+	vs = &lcd.VS[ns-1];
+
+	for (; ns; ns--, vs--)
+	{
+		pal = vs->pal;
+		x = vs->x;
+
+		if (x >= 160 || x <= -8)
+			continue;
+
+		src = get_patpix(vs->pat, vs->v);
+		dest = lcd.BUF;
+
+		if (x < 0)
+		{
+			src -= x;
+			i = 8 + x;
+		}
+		else
+		{
+			dest += x;
+			if (x > 152) i = 160 - x;
+			else i = 8;
+		}
+
+		if (vs->pri)
+		{
+			bg = bgdup + (dest - lcd.BUF);
+			while (i--)
+			{
+				b = src[i];
+				if (b && !(bg[i]&3)) dest[i] = pal|b;
+			}
+		}
+		else if (hw.hwtype == GB_HW_CGB)
+		{
+			bg = bgdup + (dest - lcd.BUF);
+			pri = lcd.PRI + (dest - lcd.BUF);
+			while (i--)
+			{
+				b = src[i];
+				if (b && (!pri[i] || !(bg[i]&3)))
+					dest[i] = pal|b;
+			}
+		}
+		else
+		{
+			while (i--) if (src[i]) dest[i] = pal|src[i];
+		}
+	}
+}
+
+static void lcd_reset(bool hard)
+{
+	if (hard)
+	{
+		memset(&lcd.vbank, 0, sizeof(lcd.vbank));
+		memset(&lcd.oam, 0, sizeof(lcd.oam));
+		memset(&lcd.pal, 0, sizeof(lcd.pal));
+		memset(&lcd.pal, 0, sizeof(lcd.pal));
+	}
+
+	memset(lcd.BG, 0, sizeof(lcd.BG));
+	memset(lcd.WND, 0, sizeof(lcd.WND));
+	memset(lcd.BUF, 0, sizeof(lcd.BUF));
+	memset(lcd.PRI, 0, sizeof(lcd.PRI));
+	memset(lcd.VS, 0, sizeof(lcd.VS));
+
+	WX = WY = lcd.WT = lcd.WV = 0;
+	lcd.S = lcd.T = lcd.U = lcd.V = 0;
+
+	WY = R_WY;
+	lcd_rebuildpal();
+}
+
+static inline void pal_update(byte i)
+{
+#ifndef IS_BIG_ENDIAN
+	un32 c = ((un16*)lcd.pal)[i];
+#else
+	un32 c = ((lcd.pal[i << 1]) | ((lcd.pal[(i << 1) | 1]) << 8));
+#endif
+	un32 r = c & 0x1f;         // bit 0-4 red
+	un32 g = (c >> 5) & 0x1f;  // bit 5-9 green
+	un32 b = (c >> 10) & 0x1f; // bit 10-14 blue
+
+	un32 out = (r << 11) | (g << (5 + 1)) | (b);
+
+	if (lcd.out.format == GB_PIXEL_565_BE) {
+		out = (out << 8) | (out >> 8);
+	}
+
+	lcd.out.cgb_pal[i] = out;
+}
+
+static void pal_write_cgb(byte i, byte b)
+{
+	if (lcd.pal[i] == b) return;
+	lcd.pal[i] = b;
+	pal_update(i >> 1);
+}
+
+static void pal_write_dmg(byte i, byte mapnum, byte d)
+{
+	un16 *map = lcd.out.dmg_pal[mapnum & 3];
+
+	for (int j = 0; j < 8; j += 2)
+	{
+		int c = map[(d >> j) & 3];
+		/* FIXME - handle directly without faking cgb */
+		pal_write_cgb(i+j, c & 0xff);
+		pal_write_cgb(i+j+1, c >> 8);
+	}
+}
+
+void lcd_rebuildpal()
+{
+	if (hw.hwtype != GB_HW_CGB)
+	{
+		const uint16_t *bgp, *obp0, *obp1;
+
+		int palette = lcd.out.colorize % GB_PALETTE_COUNT;
+
+		if (palette == GB_PALETTE_GBC && cart.colorize)
+		{
+			uint8_t palette = cart.colorize & 0x1F;
+			uint8_t flags = (cart.colorize & 0xE0) >> 5;
+
+			bgp  = colorization_palettes[palette][2];
+			obp0 = colorization_palettes[palette][(flags & 1) ? 0 : 1];
+			obp1 = colorization_palettes[palette][(flags & 2) ? 0 : 1];
+
+			if (!(flags & 4)) {
+				obp1 = colorization_palettes[palette][2];
+			}
+
+			MESSAGE_INFO("Using GBC palette %d\n", palette);
+		}
+		else if (palette == GB_PALETTE_SGB)
+		{
+			bgp = obp0 = obp1 = custom_palettes[0];
+			MESSAGE_INFO("Using SGB palette %d\n", palette);
+		}
+		else
+		{
+			bgp = obp0 = obp1 = custom_palettes[palette];
+			MESSAGE_INFO("Using Built-in palette %d\n", palette);
+		}
+
+		memcpy(&lcd.out.dmg_pal[0], bgp, 8);
+		memcpy(&lcd.out.dmg_pal[1], bgp, 8);
+		memcpy(&lcd.out.dmg_pal[2], obp0, 8);
+		memcpy(&lcd.out.dmg_pal[3], obp1, 8);
+
+		pal_write_dmg(0, 0, R_BGP);
+		pal_write_dmg(8, 1, R_BGP);
+		pal_write_dmg(64, 2, R_OBP0);
+		pal_write_dmg(72, 3, R_OBP1);
+	}
+
+	for (int i = 0; i < 64; i++)
+	{
+		pal_update(i);
+	}
+}
+
+
+/**
+ * LCD Controller routines
+ */
+
+
+/*
+ * lcd_stat_trigger updates the STAT interrupt line to reflect whether any
+ * of the conditions set to be tested (by bits 3-6 of R_STAT) are met.
+ * This function should be called whenever any of the following occur:
+ * 1) LY or LYC changes.
+ * 2) A state transition affects the low 2 bits of R_STAT (see below).
+ * 3) The program writes to the upper bits of R_STAT.
+ * lcd_stat_trigger also updates bit 2 of R_STAT to reflect whether LY=LYC.
+ */
+static void lcd_stat_trigger()
+{
+	int condbits[4] = { 0x08, 0x10, 0x20, 0x00 };
+	int mask = condbits[R_STAT & 3];
+
+	if (R_LY == R_LYC)
+		R_STAT |= 0x04;
+	else
+		R_STAT &= ~0x04;
+
+	hw_interrupt(IF_STAT, (R_LCDC & 0x80) && ((R_STAT & 0x44) == 0x44 || (R_STAT & mask)));
+}
+
+/*
+ * stat_change is called when a transition results in a change to the
+ * LCD STAT condition (the low 2 bits of R_STAT).  It raises or lowers
+ * the VBLANK interrupt line appropriately and calls lcd_stat_trigger to
+ * update the STAT interrupt line.
+ * FIXME: function now will only lower vblank interrupt, description does not match anymore
+ */
+static void inline stat_change(int stat)
+{
+	R_STAT = (R_STAT & 0x7C) | (stat & 3);
+	if (stat != 1)
+		hw_interrupt(IF_VBLANK, 0);
+	lcd_stat_trigger();
+}
+
+
+static void lcd_lcdc_change(byte b)
+{
+	byte old = R_LCDC;
+	R_LCDC = b;
+	if ((R_LCDC ^ old) & 0x80) /* lcd on/off change */
+	{
+		R_LY = 0;
+		stat_change(2);
+		lcd.cycles = 40;  // Correct value seems to be 38
+		WY = R_WY;
+	}
+}
+
+
+static void lcd_hdma_cont()
+{
+	uint src = (R_HDMA1 << 8) | (R_HDMA2 & 0xF0);
+	uint dst = 0x8000 | ((R_HDMA3 & 0x1F) << 8) | (R_HDMA4 & 0xF0);
+	uint cnt = 16;
+
+	// if (!(hw.hdma & 0x80))
+	// 	return;
+
+	while (cnt--)
+		writeb(dst++, readb(src++));
+
+	R_HDMA1 = src >> 8;
+	R_HDMA2 = src & 0xF0;
+	R_HDMA3 = (dst >> 8) & 0x1F;
+	R_HDMA4 = dst & 0xF0;
+	R_HDMA5--;
+	hw.hdma--;
+}
+
+/*
+	LCD controller operates with 154 lines per frame, of which lines
+	#0..#143 are visible and lines #144..#153 are processed in vblank
+	state.
+
+	lcd_emulate() performs cyclic switching between lcdc states (OAM
+	search/data transfer/hblank/vblank), updates system state and time
+	counters accordingly. Control is returned to the caller immediately
+	after a step that sets LCDC ahead of CPU, so that LCDC is always
+	ahead of CPU by one state change. Once CPU reaches same point in
+	time, LCDC is advanced through the next step.
+
+	For each visible line LCDC goes through states 2 (search), 3
+	(transfer) and then 0 (hblank). At the first line of vblank LCDC
+	is switched to state 1 (vblank) and remains there till line #0 is
+	reached (execution is still interrupted after each line so that
+	function could return if it ran out of time).
+
+	Irregardless of state switches per line, time spent in each line
+	adds up to exactly 228 double-speed cycles (109us).
+
+	LCDC emulation begins with R_LCDC set to "operation enabled", R_LY
+	set to line #0 and R_STAT set to state-hblank. lcd.cycles is also
+	set to zero, to begin emulation we call lcd_emulate() once to
+	force-advance LCD through the first iteration.
+
+	Docs aren't entirely accurate about time intervals within single
+	line; besides that, intervals will vary depending on number of
+	sprites on the line and probably other factors. States 1, 2 and 3
+	do not require precise sub-line CPU-LCDC sync, but state 0 might do.
+*/
+static inline void lcd_renderline()
+{
+	if (!lcd.out.enabled || !lcd.out.buffer)
+		return;
+
+	int SX, SY, SL, NS;
+
+	SL = R_LY;
+	SX = R_SCX;
+	SY = (R_SCY + SL) & 0xff;
+	lcd.S = SX >> 3;
+	lcd.T = SY >> 3;
+	lcd.U = SX & 7;
+	lcd.V = SY & 7;
+
+	WX = R_WX - 7;
+	if (WY>SL || WY<0 || WY>143 || WX<-7 || WX>160 || !(R_LCDC&0x20))
+		WX = 160;
+	lcd.WT = (SL - WY) >> 3;
+	lcd.WV = (SL - WY) & 7;
+
+	// Fix for Fushigi no Dungeon - Fuurai no Shiren GB2 and Donkey Kong
+	// This is a hack, the real problem is elsewhere
+	if (lcd.enable_window_offset_hack && (R_LCDC & 0x20))
+	{
+		lcd.WT %= 12;
+	}
+
+	NS = spr_enum();
+	tilebuf();
+
+	if (hw.hwtype == GB_HW_CGB)
+	{
+		bg_scan_color();
+		wnd_scan_color();
+		if (NS)
+		{
+			bg_scan_pri();
+			wnd_scan_pri();
+		}
+	}
+	else
+	{
+		bg_scan();
+		wnd_scan();
+		blendcpy(lcd.BUF+WX, lcd.BUF+WX, 0x04, 160-WX);
+	}
+
+	spr_scan(NS);
+
+	if (lcd.out.format == GB_PIXEL_PALETTED)
+	{
+		memcpy(lcd.out.buffer + SL * 160 , lcd.BUF, 160);
+	}
+	else
+	{
+		un16 *dst = (un16*)lcd.out.buffer + SL * 160;
+		un16 *pal = (un16*)lcd.out.cgb_pal;
+
+		for (int i = 0; i < 160; ++i)
+			dst[i] = pal[lcd.BUF[i]];
+	}
+}
+
+void lcd_emulate(int cycles)
+{
+	lcd.cycles -= cycles;
+
+	if (lcd.cycles > 0)
+		return;
+
+	/* LCD disabled */
+	if (!(R_LCDC & 0x80))
+	{
+		/* LCDC operation disabled (short route) */
+		while (lcd.cycles <= 0)
+		{
+			switch (R_STAT & 3)
+			{
+			case 0: /* hblank */
+			case 1: /* vblank */
+				// lcd_renderline();
+				stat_change(2);
+				lcd.cycles += 40;
+				break;
+			case 2: /* search */
+				stat_change(3);
+				lcd.cycles += 86;
+				break;
+			case 3: /* transfer */
+				stat_change(0);
+				/* FIXME: check docs; HDMA might require operating LCDC */
+				if (hw.hdma & 0x80)
+					lcd_hdma_cont();
+				else
+					lcd.cycles += 102;
+				break;
+			}
+			return;
+		}
+	}
+
+	while (lcd.cycles <= 0)
+	{
+		switch (R_STAT & 3)
+		{
+		case 0:
+			/* hblank -> */
+			if (++R_LY >= 144)
+			{
+				/* FIXME: pick _one_ place to trigger vblank interrupt
+				this better be done here or within stat_change(),
+				otherwise CPU will have a chance to run	for some time
+				before interrupt is triggered */
+				if (cpu.halted)
+				{
+					hw_interrupt(IF_VBLANK, 1);
+					lcd.cycles += 228;
+				}
+				else lcd.cycles += 10;
+				stat_change(1); /* -> vblank */
+				break;
+			}
+
+			// Hack for Worms Armageddon
+			if (R_STAT == 0x48)
+				hw_interrupt(IF_STAT, 0);
+
+			stat_change(2); /* -> search */
+			lcd.cycles += 40;
+			break;
+		case 1:
+			/* vblank -> */
+			if (!(hw.ilines & IF_VBLANK))
+			{
+				hw_interrupt(IF_VBLANK, 1);
+				lcd.cycles += 218;
+				break;
+			}
+			if (R_LY == 0)
+			{
+				WY = R_WY;
+				stat_change(2); /* -> search */
+				lcd.cycles += 40;
+				break;
+			}
+			else if (R_LY < 152)
+				lcd.cycles += 228;
+			else if (R_LY == 152)
+				/* Handling special case on the last line; see
+				docs/HACKING */
+				lcd.cycles += 28;
+			else
+			{
+				R_LY = -1;
+				lcd.cycles += 200;
+			}
+			R_LY++;
+			lcd_stat_trigger();
+			break;
+		case 2:
+			/* search -> */
+			lcd_renderline();
+			stat_change(3); /* -> transfer */
+			lcd.cycles += 86;
+			break;
+		case 3:
+			/* transfer -> */
+			stat_change(0); /* -> hblank */
+			if (hw.hdma & 0x80)
+				lcd_hdma_cont();
+			/* FIXME -- how much of the hblank does hdma use?? */
+			/* else */
+			lcd.cycles += 102;
+			break;
+		}
+	}
+}
+
+/******************* END LCD *******************/
+
+
+/******************* BEGIN SOUND *******************/
+
+#define S1 (snd.ch[0])
+#define S2 (snd.ch[1])
+#define S3 (snd.ch[2])
+#define S4 (snd.ch[3])
+
+#define s1_freq() {int d = 2048 - (((R_NR14&7)<<8) + R_NR13); S1.freq = (snd.rate > (d<<4)) ? 0 : (snd.rate << 17)/d;}
+#define s2_freq() {int d = 2048 - (((R_NR24&7)<<8) + R_NR23); S2.freq = (snd.rate > (d<<4)) ? 0 : (snd.rate << 17)/d;}
+#define s3_freq() {int d = 2048 - (((R_NR34&7)<<8) + R_NR33); S3.freq = (snd.rate > (d<<3)) ? 0 : (snd.rate << 21)/d;}
+#define s4_freq() {S4.freq = (freqtab[R_NR43&7] >> (R_NR43 >> 4)) * snd.rate; if (S4.freq >> 18) S4.freq = 1<<18;}
+
+static void sound_off(void)
+{
+	memset(&S1, 0, sizeof S1);
+	memset(&S2, 0, sizeof S2);
+	memset(&S3, 0, sizeof S3);
+	memset(&S4, 0, sizeof S4);
+	R_NR10 = 0x80;
+	R_NR11 = 0xBF;
+	R_NR12 = 0xF3;
+	R_NR14 = 0xBF;
+	R_NR21 = 0x3F;
+	R_NR22 = 0x00;
+	R_NR24 = 0xBF;
+	R_NR30 = 0x7F;
+	R_NR31 = 0xFF;
+	R_NR32 = 0x9F;
+	R_NR34 = 0xBF;
+	R_NR41 = 0xFF;
+	R_NR42 = 0x00;
+	R_NR43 = 0x00;
+	R_NR44 = 0xBF;
+	R_NR50 = 0x77;
+	R_NR51 = 0xF3;
+	R_NR52 = 0x70;
+	sound_dirty();
+}
+
+void sound_dirty()
+{
+	S1.swlen = ((R_NR10>>4) & 7) << 14;
+	S1.len = (64-(R_NR11&63)) << 13;
+	S1.envol = R_NR12 >> 4;
+	S1.endir = (R_NR12>>3) & 1;
+	S1.endir |= S1.endir - 1;
+	S1.enlen = (R_NR12 & 7) << 15;
+	s1_freq();
+
+	S2.len = (64-(R_NR21&63)) << 13;
+	S2.envol = R_NR22 >> 4;
+	S2.endir = (R_NR22>>3) & 1;
+	S2.endir |= S2.endir - 1;
+	S2.enlen = (R_NR22 & 7) << 15;
+	s2_freq();
+
+	S3.len = (256-R_NR31) << 20;
+	s3_freq();
+
+	S4.len = (64-(R_NR41&63)) << 13;
+	S4.envol = R_NR42 >> 4;
+	S4.endir = (R_NR42>>3) & 1;
+	S4.endir |= S4.endir - 1;
+	S4.enlen = (R_NR42 & 7) << 15;
+	s4_freq();
+}
+
+void sound_init(int samplerate, bool stereo)
+{
+	snd = (gb_snd_t){
+		.output = {
+			.samplerate = samplerate,
+			.stereo = stereo,
+			.buf = malloc(samplerate / 4),
+			.len = samplerate / 8,
+			.pos = 0,
+		},
+	};
+}
+
+static void sound_reset(bool hard)
+{
+	memset(snd.ch, 0, sizeof(snd.ch));
+	memcpy(snd.wave, hw.hwtype == GB_HW_CGB ? cgbwave : dmgwave, 16);
+	memcpy(hw.ioregs + 0x30, snd.wave, 16);
+	snd.rate = (int)(((1<<21) / (double)snd.output.samplerate) + 0.5);
+	snd.cycles = 0;
+	snd.output.pos = 0;
+	sound_off();
+	R_NR52 = 0xF1;
+}
+
+static void sound_emulate(void)
+{
+	if (!snd.rate || snd.cycles < snd.rate)
+		return;
+
+	for (; snd.cycles >= snd.rate; snd.cycles -= snd.rate)
+	{
+		int l = 0;
+		int r = 0;
+
+		if (S1.on)
+		{
+			int s = sqwave[R_NR11>>6][(S1.pos>>18)&7] & S1.envol;
+			S1.pos += S1.freq;
+
+			if ((R_NR14 & 64) && ((S1.cnt += snd.rate) >= S1.len))
+				S1.on = 0;
+
+			if (S1.enlen && (S1.encnt += snd.rate) >= S1.enlen)
+			{
+				S1.encnt -= S1.enlen;
+				S1.envol += S1.endir;
+				if (S1.envol < 0) S1.envol = 0;
+				if (S1.envol > 15) S1.envol = 15;
+			}
+
+			if (S1.swlen && (S1.swcnt += snd.rate) >= S1.swlen)
+			{
+				S1.swcnt -= S1.swlen;
+				int f = S1.swfreq;
+
+				if (R_NR10 & 8)
+					f -= (f >> (R_NR10 & 7));
+				else
+					f += (f >> (R_NR10 & 7));
+
+				if (f > 2047)
+					S1.on = 0;
+				else
+				{
+					S1.swfreq = f;
+					R_NR13 = f;
+					R_NR14 = (R_NR14 & 0xF8) | (f>>8);
+					s1_freq();
+				}
+			}
+			s <<= 2;
+			if (R_NR51 & 1) r += s;
+			if (R_NR51 & 16) l += s;
+		}
+
+		if (S2.on)
+		{
+			int s = sqwave[R_NR21>>6][(S2.pos>>18)&7] & S2.envol;
+			S2.pos += S2.freq;
+
+			if ((R_NR24 & 64) && ((S2.cnt += snd.rate) >= S2.len))
+				S2.on = 0;
+
+			if (S2.enlen && (S2.encnt += snd.rate) >= S2.enlen)
+			{
+				S2.encnt -= S2.enlen;
+				S2.envol += S2.endir;
+				if (S2.envol < 0) S2.envol = 0;
+				if (S2.envol > 15) S2.envol = 15;
+			}
+			s <<= 2;
+			if (R_NR51 & 2) r += s;
+			if (R_NR51 & 32) l += s;
+		}
+
+		if (S3.on)
+		{
+			int s = snd.wave[(S3.pos>>22) & 15];
+
+			if (S3.pos & (1<<21))
+				s &= 15;
+			else
+				s >>= 4;
+
+			s -= 8;
+			S3.pos += S3.freq;
+
+			if ((R_NR34 & 64) && ((S3.cnt += snd.rate) >= S3.len))
+				S3.on = 0;
+
+			if (R_NR32 & 96)
+				s <<= (3 - ((R_NR32>>5)&3));
+			else
+				s = 0;
+
+			if (R_NR51 & 4) r += s;
+			if (R_NR51 & 64) l += s;
+		}
+
+		if (S4.on)
+		{
+			int s;
+
+			if (R_NR43 & 8)
+				s = 1 & (noise7[(S4.pos>>20)&15] >> (7-((S4.pos>>17)&7)));
+			else
+				s = 1 & (noise15[(S4.pos>>20)&4095] >> (7-((S4.pos>>17)&7)));
+
+			s = (-s) & S4.envol;
+			S4.pos += S4.freq;
+
+			if ((R_NR44 & 64) && ((S4.cnt += snd.rate) >= S4.len))
+				S4.on = 0;
+
+			if (S4.enlen && (S4.encnt += snd.rate) >= S4.enlen)
+			{
+				S4.encnt -= S4.enlen;
+				S4.envol += S4.endir;
+				if (S4.envol < 0) S4.envol = 0;
+				if (S4.envol > 15) S4.envol = 15;
+			}
+
+			s += s << 1;
+
+			if (R_NR51 & 8) r += s;
+			if (R_NR51 & 128) l += s;
+		}
+
+		l *= (R_NR50 & 0x07);
+		r *= ((R_NR50 & 0x70)>>4);
+
+		l <<= 4;
+		r <<= 4;
+
+		if (snd.output.buf == NULL)
+		{
+			MESSAGE_DEBUG("no audio buffer... (output.len=%d)\n", snd.output.len);
+		}
+		else if (snd.output.pos >= snd.output.len)
+		{
+			MESSAGE_ERROR("buffer overflow. (output.len=%d)\n", snd.output.len);
+			snd.output.pos = 0;
+		}
+		else if (snd.output.stereo)
+		{
+			snd.output.buf[snd.output.pos++] = (n16)l; //+128;
+			snd.output.buf[snd.output.pos++] = (n16)r; //+128;
+		}
+		else
+		{
+			snd.output.buf[snd.output.pos++] = (n16)((l+r)>>1); //+128;
+		}
+	}
+	R_NR52 = (R_NR52&0xf0) | S1.on | (S2.on<<1) | (S3.on<<2) | (S4.on<<3);
+}
+
+static void sound_write(byte r, byte b)
+{
+	if (!(R_NR52 & 128) && r != RI_NR52)
+		return;
+
+	if ((r & 0xF0) == 0x30)
+	{
+		if (S3.on && snd.cycles >= snd.rate)
+			sound_emulate();
+		if (!S3.on)
+			snd.wave[r-0x30] = hw.ioregs[r] = b;
+		return;
+	}
+
+	if (snd.cycles >= snd.rate)
+		sound_emulate();
+
+	switch (r)
+	{
+	case RI_NR10:
+		R_NR10 = b;
+		S1.swlen = ((R_NR10>>4) & 7) << 14;
+		S1.swfreq = ((R_NR14&7)<<8) + R_NR13;
+		break;
+	case RI_NR11:
+		R_NR11 = b;
+		S1.len = (64-(R_NR11&63)) << 13;
+		break;
+	case RI_NR12:
+		R_NR12 = b;
+		S1.envol = R_NR12 >> 4;
+		S1.endir = (R_NR12>>3) & 1;
+		S1.endir |= S1.endir - 1;
+		S1.enlen = (R_NR12 & 7) << 15;
+		break;
+	case RI_NR13:
+		R_NR13 = b;
+		s1_freq();
+		break;
+	case RI_NR14:
+		R_NR14 = b;
+		s1_freq();
+		if (b & 128)
+		{
+			S1.swcnt = 0;
+			S1.swfreq = ((R_NR14&7)<<8) + R_NR13;
+			S1.envol = R_NR12 >> 4;
+			S1.endir = (R_NR12>>3) & 1;
+			S1.endir |= S1.endir - 1;
+			S1.enlen = (R_NR12 & 7) << 15;
+			if (!S1.on) S1.pos = 0;
+			S1.on = 1;
+			S1.cnt = 0;
+			S1.encnt = 0;
+		}
+		break;
+	case RI_NR21:
+		R_NR21 = b;
+		S2.len = (64-(R_NR21&63)) << 13;
+		break;
+	case RI_NR22:
+		R_NR22 = b;
+		S2.envol = R_NR22 >> 4;
+		S2.endir = (R_NR22>>3) & 1;
+		S2.endir |= S2.endir - 1;
+		S2.enlen = (R_NR22 & 7) << 15;
+		break;
+	case RI_NR23:
+		R_NR23 = b;
+		s2_freq();
+		break;
+	case RI_NR24:
+		R_NR24 = b;
+		s2_freq();
+		if (b & 128)
+		{
+			S2.envol = R_NR22 >> 4;
+			S2.endir = (R_NR22>>3) & 1;
+			S2.endir |= S2.endir - 1;
+			S2.enlen = (R_NR22 & 7) << 15;
+			if (!S2.on) S2.pos = 0;
+			S2.on = 1;
+			S2.cnt = 0;
+			S2.encnt = 0;
+		}
+		break;
+	case RI_NR30:
+		R_NR30 = b;
+		if (!(b & 128)) S3.on = 0;
+		break;
+	case RI_NR31:
+		R_NR31 = b;
+		S3.len = (256-R_NR31) << 13;
+		break;
+	case RI_NR32:
+		R_NR32 = b;
+		break;
+	case RI_NR33:
+		R_NR33 = b;
+		s3_freq();
+		break;
+	case RI_NR34:
+		R_NR34 = b;
+		s3_freq();
+		if (b & 128)
+		{
+			if (!S3.on) S3.pos = 0;
+			S3.cnt = 0;
+			S3.on = R_NR30 >> 7;
+			if (!S3.on) return;
+			for (int i = 0; i < 16; i++)
+				hw.ioregs[i+0x30] = 0x13 ^ hw.ioregs[i+0x31];
+		}
+		break;
+	case RI_NR41:
+		R_NR41 = b;
+		S4.len = (64-(R_NR41&63)) << 13;
+		break;
+	case RI_NR42:
+		R_NR42 = b;
+		S4.envol = R_NR42 >> 4;
+		S4.endir = (R_NR42>>3) & 1;
+		S4.endir |= S4.endir - 1;
+		S4.enlen = (R_NR42 & 7) << 15;
+		break;
+	case RI_NR43:
+		R_NR43 = b;
+		s4_freq();
+		break;
+	case RI_NR44:
+		R_NR44 = b;
+		if (b & 128)
+		{
+			S4.envol = R_NR42 >> 4;
+			S4.endir = (R_NR42>>3) & 1;
+			S4.endir |= S4.endir - 1;
+			S4.enlen = (R_NR42 & 7) << 15;
+			S4.on = 1;
+			S4.pos = 0;
+			S4.cnt = 0;
+			S4.encnt = 0;
+		}
+		break;
+	case RI_NR50:
+		R_NR50 = b;
+		break;
+	case RI_NR51:
+		R_NR51 = b;
+		break;
+	case RI_NR52:
+		R_NR52 = b;
+		if (!(R_NR52 & 128))
+			sound_off();
+		break;
+	default:
+		return;
+	}
+}
+
+/******************* END SOUND *******************/
+
+
+/******************* BEGIN RTC *******************/
 
 static void rtc_latch(byte b)
 {
-	if ((rtc.latch ^ b) & b & 1)
+	if ((cart.rtc.latch ^ b) & b & 1)
 	{
-		rtc.regs[0] = rtc.s;
-		rtc.regs[1] = rtc.m;
-		rtc.regs[2] = rtc.h;
-		rtc.regs[3] = rtc.d;
-		rtc.regs[4] = rtc.flags;
+		cart.rtc.regs[0] = cart.rtc.s;
+		cart.rtc.regs[1] = cart.rtc.m;
+		cart.rtc.regs[2] = cart.rtc.h;
+		cart.rtc.regs[3] = cart.rtc.d;
+		cart.rtc.regs[4] = cart.rtc.flags;
 	}
-	rtc.latch = b & 1;
+	cart.rtc.latch = b & 1;
 }
 
 
 static void rtc_write(byte b)
 {
-	switch (rtc.sel & 0xf)
+	switch (cart.rtc.sel & 0xf)
 	{
 	case 0x8: // Seconds
-		rtc.regs[0] = b;
-		rtc.s = b % 60;
+		cart.rtc.regs[0] = b;
+		cart.rtc.s = b % 60;
 		break;
 	case 0x9: // Minutes
-		rtc.regs[1] = b;
-		rtc.m = b % 60;
+		cart.rtc.regs[1] = b;
+		cart.rtc.m = b % 60;
 		break;
 	case 0xA: // Hours
-		rtc.regs[2] = b;
-		rtc.h = b % 24;
+		cart.rtc.regs[2] = b;
+		cart.rtc.h = b % 24;
 		break;
 	case 0xB: // Days (lower 8 bits)
-		rtc.regs[3] = b;
-		rtc.d = ((rtc.d & 0x100) | b) % 365;
+		cart.rtc.regs[3] = b;
+		cart.rtc.d = ((cart.rtc.d & 0x100) | b) % 365;
 		break;
 	case 0xC: // Flags (days upper 1 bit, carry, stop)
-		rtc.regs[4] = b;
-		rtc.flags = b;
-		rtc.d = ((rtc.d & 0xff) | ((b&1)<<9)) % 365;
+		cart.rtc.regs[4] = b;
+		cart.rtc.flags = b;
+		cart.rtc.d = ((cart.rtc.d & 0xff) | ((b&1)<<9)) % 365;
 		break;
 	}
-	rtc.dirty = 1;
 }
 
 
 static void rtc_tick()
 {
-	if ((rtc.flags & 0x40))
+	if ((cart.rtc.flags & 0x40))
 		return; // rtc stop
 
-	if (++rtc.ticks >= 60)
+	if (++cart.rtc.ticks >= 60)
 	{
-		if (++rtc.s >= 60)
+		if (++cart.rtc.s >= 60)
 		{
-			if (++rtc.m >= 60)
+			if (++cart.rtc.m >= 60)
 			{
-				if (++rtc.h >= 24)
+				if (++cart.rtc.h >= 24)
 				{
-					if (++rtc.d >= 365)
+					if (++cart.rtc.d >= 365)
 					{
-						rtc.d = 0;
-						rtc.flags |= 0x80;
+						cart.rtc.d = 0;
+						cart.rtc.flags |= 0x80;
 					}
-					rtc.h = 0;
+					cart.rtc.h = 0;
 				}
-				rtc.m = 0;
+				cart.rtc.m = 0;
 			}
-			rtc.s = 0;
+			cart.rtc.s = 0;
 		}
-		rtc.ticks = 0;
+		cart.rtc.ticks = 0;
 	}
 }
 
+/******************* END RTC *******************/
 
 /*
  * hw_interrupt changes the virtual interrupt line(s) defined by i
@@ -206,7 +1448,7 @@ void hw_reset(bool hard)
 	{
 		memset(hw.rambanks, 0xff, 4096 * 8);
 		memset(cart.rambanks, 0xff, 8192 * cart.ramsize);
-		memset(&rtc, 0, sizeof(rtc));
+		memset(&cart.rtc, 0, sizeof(cart.rtc));
 	}
 
 	memset(hw.rmap, 0, sizeof(hw.rmap));
@@ -218,6 +1460,9 @@ void hw_reset(bool hard)
 	cart.rambank = 0;
 	cart.enableram = 0;
 	hw_updatemap();
+
+	lcd_reset(hard);
+	sound_reset(hard);
 }
 
 
@@ -351,7 +1596,7 @@ static inline void mbc_write(uint a, byte b)
 			cart.rombank = b & 0x7F;
 			break;
 		case 0x4000:
-			rtc.sel = b & 0x0f;
+			cart.rtc.sel = b & 0x0f;
 			cart.rambank = b & 0x03;
 			break;
 		case 0x6000:
@@ -443,7 +1688,7 @@ void hw_write(uint a, byte b)
 		if (!cart.enableram)
 			break;
 
-		if (rtc.sel & 8)
+		if (cart.rtc.sel & 8)
 		{
 			rtc_write(b);
 		}
@@ -654,8 +1899,8 @@ byte hw_read(uint a)
 	case 0xA000: // Cart RAM or RTC
 		if (!cart.enableram)
 			return 0xFF;
-		if (rtc.sel & 8)
-			return rtc.regs[rtc.sel & 7];
+		if (cart.rtc.sel & 8)
+			return cart.rtc.regs[cart.rtc.sel & 7];
 		return cart.rambanks[cart.rambank][a & 0x1FFF];
 
 	case 0xC000: // System RAM

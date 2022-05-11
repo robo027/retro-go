@@ -4,8 +4,6 @@
 #include "gnuboy.h"
 #include "hw.h"
 #include "cpu.h"
-#include "sound.h"
-#include "lcd.h"
 
 static void (*vblank_callback)(void);
 
@@ -27,9 +25,7 @@ int gnuboy_init(int samplerate, bool stereo, int pixformat, void *vblank_func)
 void gnuboy_reset(bool hard)
 {
 	hw_reset(hard);
-	lcd_reset(hard);
 	cpu_reset(hard);
-	sound_reset(hard);
 }
 
 
@@ -397,21 +393,20 @@ void gnuboy_free_rom(void)
 
 void gnuboy_get_time(int *day, int *hour, int *minute, int *second)
 {
-	if (day) *day = rtc.d;
-	if (hour) *hour = rtc.h;
-	if (minute) *minute = rtc.m;
-	if (second) *second = rtc.s;
+	if (day) *day = cart.rtc.d;
+	if (hour) *hour = cart.rtc.h;
+	if (minute) *minute = cart.rtc.m;
+	if (second) *second = cart.rtc.s;
 }
 
 
 void gnuboy_set_time(int day, int hour, int minute, int second)
 {
-	rtc.d = MIN(MAX(day, 0), 365);
-	rtc.h = MIN(MAX(hour, 0), 24);
-	rtc.m = MIN(MAX(minute, 0), 60);
-	rtc.s = MIN(MAX(second, 0), 60);
-	rtc.ticks = 0;
-	rtc.dirty = 0;
+	cart.rtc.d = MIN(MAX(day, 0), 365);
+	cart.rtc.h = MIN(MAX(hour, 0), 24);
+	cart.rtc.m = MIN(MAX(minute, 0), 60);
+	cart.rtc.s = MIN(MAX(second, 0), 60);
+	cart.rtc.ticks = 0;
 }
 
 
@@ -443,7 +438,412 @@ void gnuboy_set_palette(gb_palette_t pal)
 }
 
 
+/**
+ * Save state file format is:
+ * GB:
+ * 0x0000 - 0x0BFF: svars
+ * 0x0CF0 - 0x0CFF: snd.wave
+ * 0x0D00 - 0x0DFF: hw.ioregs
+ * 0x0E00 - 0x0E80: lcd.pal
+ * 0x0F00 - 0x0FFF: lcd.oam
+ * 0x1000 - 0x2FFF: RAM
+ * 0x3000 - 0x4FFF: VRAM
+ * 0x5000 - 0x...:  SRAM
+ *
+ * GBC:
+ * 0x0000 - 0x0BFF: svars
+ * 0x0CF0 - 0x0CFF: snd.wave
+ * 0x0D00 - 0x0DFF: hw.ioregs
+ * 0x0E00 - 0x0EFF: lcd.pal
+ * 0x0F00 - 0x0FFF: lcd.oam
+ * 0x1000 - 0x8FFF: RAM
+ * 0x9000 - 0xCFFF: VRAM
+ * 0xD000 - 0x...:  SRAM
+ *
+ */
+
+#ifndef IS_BIG_ENDIAN
+#define LIL(x) (x)
+#else
+#define LIL(x) ((x<<24)|((x&0xff00)<<8)|((x>>8)&0xff00)|(x>>24))
+#endif
+
+#define SAVE_VERSION 0x107
+
+#define I1(s, p) { 1, s, p }
+#define I2(s, p) { 2, s, p }
+#define I4(s, p) { 4, s, p }
+#define END { 0, "\0\0\0\0", 0 }
+
+typedef struct
+{
+	size_t len;
+	char key[4];
+	void *ptr;
+} svar_t;
+
+typedef struct
+{
+	void *ptr;
+	size_t len;
+} sblock_t;
+
+// This is the format used by VBA, maybe others
+typedef struct
+{
+	uint32_t s, m, h, d, flags;
+	uint32_t regs[5];
+	uint64_t rt;
+} srtc_t;
+
+static un32 ver;
+
+static const svar_t svars[] =
+{
+	I4("GbSs", &ver),
+
+	I2("PC  ", &PC),
+	I2("SP  ", &SP),
+	I2("BC  ", &BC),
+	I2("DE  ", &DE),
+	I2("HL  ", &HL),
+	I2("AF  ", &AF),
+
+	I4("IME ", &cpu.ime),
+	I4("ima ", &cpu.ima),
+	I4("spd ", &cpu.double_speed),
+	I4("halt", &cpu.halted),
+	I4("div ", &cpu.div),
+	I4("tim ", &cpu.timer),
+	I4("lcdc", &lcd.cycles),
+	I4("snd ", &snd.cycles),
+
+	I4("ints", &hw.ilines),
+	I4("pad ", &hw.pad),
+	I4("hdma", &hw.hdma),
+	I4("seri", &hw.serial),
+
+	I4("mbcm", &cart.bankmode),
+	I4("romb", &cart.rombank),
+	I4("ramb", &cart.rambank),
+	I4("enab", &cart.enableram),
+
+	I4("rtcR", &cart.rtc.sel),
+	I4("rtcL", &cart.rtc.latch),
+	I4("rtcF", &cart.rtc.flags),
+	I4("rtcd", &cart.rtc.d),
+	I4("rtch", &cart.rtc.h),
+	I4("rtcm", &cart.rtc.m),
+	I4("rtcs", &cart.rtc.s),
+	I4("rtct", &cart.rtc.ticks),
+	I1("rtR8", &cart.rtc.regs[0]),
+	I1("rtR9", &cart.rtc.regs[1]),
+	I1("rtRA", &cart.rtc.regs[2]),
+	I1("rtRB", &cart.rtc.regs[3]),
+	I1("rtRC", &cart.rtc.regs[4]),
+
+	I4("S1on", &snd.ch[0].on),
+	I4("S1p ", &snd.ch[0].pos),
+	I4("S1c ", &snd.ch[0].cnt),
+	I4("S1ec", &snd.ch[0].encnt),
+	I4("S1sc", &snd.ch[0].swcnt),
+	I4("S1sf", &snd.ch[0].swfreq),
+
+	I4("S2on", &snd.ch[1].on),
+	I4("S2p ", &snd.ch[1].pos),
+	I4("S2c ", &snd.ch[1].cnt),
+	I4("S2ec", &snd.ch[1].encnt),
+
+	I4("S3on", &snd.ch[2].on),
+	I4("S3p ", &snd.ch[2].pos),
+	I4("S3c ", &snd.ch[2].cnt),
+
+	I4("S4on", &snd.ch[3].on),
+	I4("S4p ", &snd.ch[3].pos),
+	I4("S4c ", &snd.ch[3].cnt),
+	I4("S4ec", &snd.ch[3].encnt),
+
+	END
+};
+
+// Set in the far future for VBA-M support
+#define RTC_BASE 1893456000
+
+
 bool gnuboy_sram_dirty(void)
 {
 	return cart.sram_dirty != 0;
+}
+
+int gnuboy_sram_load(const char *file)
+{
+	if (!cart.has_battery || !cart.ramsize || !file || !*file)
+		return -1;
+
+	FILE *f = fopen(file, "rb");
+	if (!f)
+		return -2;
+
+	MESSAGE_INFO("Loading SRAM from '%s'\n", file);
+
+	cart.sram_dirty = 0;
+	cart.sram_saved = 0;
+
+	for (int i = 0; i < cart.ramsize; i++)
+	{
+		if (fseek(f, i * 8192, SEEK_SET) == 0 && fread(cart.rambanks[i], 8192, 1, f) == 1)
+		{
+			MESSAGE_INFO("Loaded SRAM bank %d.\n", i);
+			cart.sram_saved = (1 << i);
+		}
+	}
+
+	if (cart.has_rtc)
+	{
+		srtc_t rtc_buf;
+
+		if (fseek(f, cart.ramsize * 8192, SEEK_SET) == 0 && fread(&rtc_buf, 48, 1, f) == 1)
+		{
+			cart.rtc = (gb_rtc_t){
+				.s = rtc_buf.s,
+				.m = rtc_buf.m,
+				.h = rtc_buf.h,
+				.d = rtc_buf.d,
+				.flags = rtc_buf.flags,
+				.regs = {
+					rtc_buf.regs[0],
+					rtc_buf.regs[1],
+					rtc_buf.regs[2],
+					rtc_buf.regs[3],
+					rtc_buf.regs[4],
+				},
+			};
+			MESSAGE_INFO("Loaded RTC section %03d %02d:%02d:%02d.\n", cart.rtc.d, cart.rtc.h, cart.rtc.m, cart.rtc.s);
+		}
+	}
+
+	fclose(f);
+
+	return cart.sram_saved ? 0 : -1;
+}
+
+
+/**
+ * If quick_save is set to true, gnuboy_sram_save will only save the sectors that
+ * changed + the RTC. If set to false then a full sram file is created.
+ */
+int gnuboy_sram_save(const char *file, bool quick_save)
+{
+	if (!cart.has_battery || !cart.ramsize || !file || !*file)
+		return -1;
+
+	FILE *f = fopen(file, "wb");
+	if (!f)
+		return -2;
+
+	MESSAGE_INFO("Saving SRAM to '%s'...\n", file);
+
+	// Mark everything as dirty and unsaved (do a full save)
+	if (!quick_save)
+	{
+		cart.sram_dirty = (1 << cart.ramsize) - 1;
+		cart.sram_saved = 0;
+	}
+
+	for (int i = 0; i < cart.ramsize; i++)
+	{
+		if (!(cart.sram_saved & (1 << i)) || (cart.sram_dirty & (1 << i)))
+		{
+			if (fseek(f, i * 8192, SEEK_SET) == 0 && fwrite(cart.rambanks[i], 8192, 1, f) == 1)
+			{
+				MESSAGE_INFO("Saved SRAM bank %d.\n", i);
+				cart.sram_dirty &= ~(1 << i);
+				cart.sram_saved |= (1 << i);
+			}
+		}
+	}
+
+	if (cart.has_rtc)
+	{
+		srtc_t rtc_buf = {
+			.s = cart.rtc.s,
+			.m = cart.rtc.m,
+			.h = cart.rtc.h,
+			.d = cart.rtc.d,
+			.flags = cart.rtc.flags,
+			.regs = {
+				cart.rtc.regs[0],
+				cart.rtc.regs[1],
+				cart.rtc.regs[2],
+				cart.rtc.regs[3],
+				cart.rtc.regs[4],
+			},
+			.rt = RTC_BASE + cart.rtc.s + (cart.rtc.m * 60) + (cart.rtc.h * 3600) + (cart.rtc.d * 86400),
+		};
+		if (fseek(f, cart.ramsize * 8192, SEEK_SET) == 0 && fwrite(&rtc_buf, 48, 1, f) == 1)
+		{
+			MESSAGE_INFO("Saved RTC section.\n");
+		}
+	}
+
+	fclose(f);
+
+	return cart.sram_dirty ? -1 : 0;
+}
+
+
+int gnuboy_state_save(const char *file)
+{
+	void *buf = calloc(1, 4096);
+	if (!buf) return -2;
+
+	FILE *fp = fopen(file, "wb");
+	if (!fp) goto _error;
+
+	bool is_cgb = hw.hwtype == GB_HW_CGB;
+
+	sblock_t blocks[] = {
+		{buf, 1},
+		{hw.rambanks, is_cgb ? 8 : 2},
+		{lcd.vbank, is_cgb ? 4 : 2},
+		{cart.rambanks, cart.ramsize * 2},
+		{NULL, 0},
+	};
+
+	un32 (*header)[2] = (un32 (*)[2])buf;
+
+	ver = SAVE_VERSION;
+
+	for (int i = 0; svars[i].ptr; i++)
+	{
+		un32 d = 0;
+
+		switch (svars[i].len)
+		{
+		case 1:
+			d = *(un8 *)svars[i].ptr;
+			break;
+		case 2:
+			d = *(un16 *)svars[i].ptr;
+			break;
+		case 4:
+			d = *(un32 *)svars[i].ptr;
+			break;
+		}
+
+		header[i][0] = *(un32 *)svars[i].key;
+		header[i][1] = LIL(d);
+	}
+
+	memcpy(buf+0x0CF0, snd.wave, sizeof snd.wave);
+	memcpy(buf+0x0D00, hw.ioregs, sizeof hw.ioregs);
+	memcpy(buf+0x0E00, lcd.pal, sizeof lcd.pal);
+	memcpy(buf+0x0F00, lcd.oam.mem, sizeof lcd.oam);
+
+	for (int i = 0; blocks[i].ptr != NULL; i++)
+	{
+		if (fwrite(blocks[i].ptr, 4096, blocks[i].len, fp) < 1)
+		{
+			MESSAGE_ERROR("Write error in block %d\n", i);
+			goto _error;
+		}
+	}
+
+	fclose(fp);
+	free(buf);
+
+	return 0;
+
+_error:
+	if (fp) fclose(fp);
+	if (buf) free(buf);
+
+	return -1;
+}
+
+
+int gnuboy_state_load(const char *file)
+{
+	void* buf = calloc(1, 4096);
+	if (!buf) return -2;
+
+	FILE *fp = fopen(file, "rb");
+	if (!fp) goto _error;
+
+	bool is_cgb = hw.hwtype == GB_HW_CGB;
+
+	sblock_t blocks[] = {
+		{buf, 1},
+		{hw.rambanks, is_cgb ? 8 : 2},
+		{lcd.vbank, is_cgb ? 4 : 2},
+		{cart.rambanks, cart.ramsize * 2},
+		{NULL, 0},
+	};
+
+	for (int i = 0; blocks[i].ptr != NULL; i++)
+	{
+		if (fread(blocks[i].ptr, 4096, blocks[i].len, fp) < 1)
+		{
+			MESSAGE_ERROR("Read error in block %d\n", i);
+			goto _error;
+		}
+	}
+
+	un32 (*header)[2] = (un32 (*)[2])buf;
+
+	for (int i = 0; svars[i].ptr; i++)
+	{
+		un32 d = 0;
+
+		for (int j = 0; header[j][0]; j++)
+		{
+			if (header[j][0] == *(un32 *)svars[i].key)
+			{
+				d = LIL(header[j][1]);
+				break;
+			}
+		}
+
+		switch (svars[i].len)
+		{
+		case 1:
+			*(un8 *)svars[i].ptr = d;
+			break;
+		case 2:
+			*(un16 *)svars[i].ptr = d;
+			break;
+		case 4:
+			*(un32 *)svars[i].ptr = d;
+			break;
+		}
+	}
+
+	if (ver != SAVE_VERSION)
+		MESSAGE_ERROR("Save file version mismatch!\n");
+
+	memcpy(snd.wave, buf+0x0CF0, sizeof snd.wave);
+	memcpy(hw.ioregs, buf+0x0D00, sizeof hw.ioregs);
+	memcpy(lcd.pal, buf+0x0E00, sizeof lcd.pal);
+	memcpy(lcd.oam.mem, buf+0x0F00, sizeof lcd.oam);
+
+	fclose(fp);
+	free(buf);
+
+	// Disable BIOS. This is a hack to support old saves
+	R_BIOS = 0x1;
+
+	// Older saves might overflow this
+	cart.rambank &= (cart.ramsize - 1);
+
+	lcd_rebuildpal();
+	sound_dirty();
+	hw_updatemap();
+
+	return 0;
+
+_error:
+	if (fp) fclose(fp);
+	if (buf) free(buf);
+
+	return -1;
 }
