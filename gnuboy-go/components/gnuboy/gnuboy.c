@@ -770,11 +770,8 @@ void lcd_emulate(int cycles)
 {
 	lcd.cycles -= cycles;
 
-	if (lcd.cycles > 0)
-		return;
-
 	/* LCDC operation disabled (short route) */
-	while (!(R_LCDC & 0x80) && lcd.cycles <= 0)
+	while (lcd.cycles <= 0 && !(R_LCDC & 0x80))
 	{
 		switch (R_STAT & 3)
 		{
@@ -799,6 +796,7 @@ void lcd_emulate(int cycles)
 		}
 	}
 
+	// Normal LCD emulation
 	while (lcd.cycles <= 0)
 	{
 		switch (R_STAT & 3)
