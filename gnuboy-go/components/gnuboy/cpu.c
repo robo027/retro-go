@@ -7,8 +7,7 @@
 static inline byte readb(uint a)
 {
 	byte *p = hw.rmap[a>>12];
-	if (p) return p[a];
-	return hw_read(a);
+	return p ? p[a] : hw_read(a);
 }
 
 static inline void writeb(uint a, byte b)
@@ -20,34 +19,24 @@ static inline void writeb(uint a, byte b)
 
 static inline un16 readw(uint a)
 {
-	if ((a & 0xFFF) == 0xFFF) // Page crossing
+	byte *p = hw.rmap[a >> 12];
+	if (!p || (a & 1))
 	{
 		return readb(a) | (readb(a + 1) << 8);
 	}
-	byte *p = hw.rmap[a >> 12];
-	if (p)
-	{
-		return *(un16 *)(p + a);
-	}
-	return hw_read(a) | (hw_read(a + 1) << 8);
+	return *(un16 *)(p + a);
 }
 
 static inline void writew(uint a, un16 w)
 {
-	if ((a & 0xFFF) == 0xFFF) // Page crossing
+	byte *p = hw.wmap[a >> 12];
+	if (!p || (a & 1))
 	{
 		writeb(a, w);
 		writeb(a + 1, w >> 8);
 		return;
 	}
-	byte *p = hw.wmap[a >> 12];
-	if (p)
-	{
-		*(un16 *)(p + a) = w;
-		return;
-	}
-	hw_write(a, w);
-	hw_write(a + 1, w >> 8);
+	*(un16 *)(p + a) = w;
 }
 
 
