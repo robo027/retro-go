@@ -142,3 +142,182 @@
 #define R_NR50 REG(RI_NR50)
 #define R_NR51 REG(RI_NR51)
 #define R_NR52 REG(RI_NR52)
+
+
+
+/* Quick access CPU registers */
+#ifndef IS_BIG_ENDIAN
+#define LB(r) ((r).b[0])
+#define HB(r) ((r).b[1])
+#else
+#define LB(r) ((r).b[1])
+#define HB(r) ((r).b[0])
+#endif
+#define W(r) ((r).w)
+
+#define A HB(cpu.af)
+#define F LB(cpu.af)
+#define B HB(cpu.bc)
+#define C LB(cpu.bc)
+#define D HB(cpu.de)
+#define E LB(cpu.de)
+#define H HB(cpu.hl)
+#define L LB(cpu.hl)
+
+#define AF W(cpu.af)
+#define BC W(cpu.bc)
+#define DE W(cpu.de)
+#define HL W(cpu.hl)
+
+#define PC W(cpu.pc)
+#define SP W(cpu.sp)
+
+#define IMA cpu.ima
+#define IME cpu.ime
+
+#define FZ 0x80
+#define FN 0x40
+#define FH 0x20
+#define FC 0x10
+#define FL 0x0F /* low unused portion of flags */
+
+#define MIN(a, b) ({__typeof__(a) _a = (a); __typeof__(b) _b = (b);_a < _b ? _a : _b; })
+#define MAX(a, b) ({__typeof__(a) _a = (a); __typeof__(b) _b = (b);_a > _b ? _a : _b; })
+
+typedef uint8_t byte;
+typedef uint8_t un8;
+typedef uint16_t un16;
+typedef uint32_t un32;
+typedef int8_t n8;
+typedef int16_t n16;
+typedef int32_t n32;
+
+enum {
+	MBC_NONE = 0,
+	MBC_MBC1,
+	MBC_MBC2,
+	MBC_MBC3,
+	MBC_MBC5,
+	MBC_MBC6,
+	MBC_MBC7,
+	MBC_HUC1,
+	MBC_HUC3,
+	MBC_MMM01,
+};
+
+typedef struct
+{
+	byte rambanks[8][4096];
+	byte ioregs[256];
+	byte *rmap[0x10];
+	byte *wmap[0x10];
+	un32 interrupts;
+	un32 joypad;
+	un32 hwtype;
+	byte *bios;
+	n32 serial;
+	n32 hdma;
+	un32 timer, timer_div;
+} gb_hw_t;
+
+typedef struct
+{
+	n32 sel, flags, latch;
+	n32 ticks;      // Ticks (60 = +1s)
+	n32 d, h, m, s; // Current time
+	n32 regs[5];    // Latched time
+} gb_rtc_t;
+
+typedef struct
+{
+	// Meta information
+	char name[20];
+	un16 checksum;
+	un16 colorize;
+	un32 romsize;
+	un32 ramsize;
+
+	// Memory
+	byte *rombanks[512];
+	byte (*rambanks)[8192];
+	un32 sram_dirty;
+	un32 sram_saved;
+
+	// Extra hardware
+	bool has_rumble;
+	bool has_sensor;
+	bool has_battery;
+	bool has_rtc;
+
+	// MBC stuff
+	int mbc;
+	int bankmode;
+	int enableram;
+	int rombank;
+	int rambank;
+	gb_rtc_t rtc;
+
+	// File descriptors that we keep open
+	FILE *romFile;
+	FILE *sramFile;
+} gb_cart_t;
+
+typedef struct
+{
+	int rate, cycles;
+	byte wave[16];
+	struct {
+		uint on, pos;
+		int cnt, encnt, swcnt;
+		int len, enlen, swlen;
+		int swfreq, freq;
+		int envol, endir;
+	} ch[4];
+} gb_snd_t;
+
+typedef struct
+{
+	byte y, x, pat, flags;
+} gb_obj_t;
+
+typedef struct
+{
+	int pat, x, v, pal, pri;
+} gb_vs_t;
+
+typedef struct
+{
+	byte vbank[2][8192];
+	union {
+		byte mem[256];
+		gb_obj_t obj[40];
+	} oam;
+	byte pal[128];
+
+	int BG[64];
+	int WND[64];
+	byte BUF[0x100];
+	byte PRI[0x100];
+	gb_vs_t VS[16];
+
+	int S, T, U, V;
+	int WX, WY, WT, WV;
+
+	int cycles;
+
+	// Fix for Fushigi no Dungeon - Fuurai no Shiren GB2 and Donkey Kong
+	int enable_window_offset_hack;
+} gb_lcd_t;
+
+typedef union
+{
+	byte b[2];
+	un16 w;
+} cpu_reg_t;
+
+typedef struct
+{
+	cpu_reg_t pc, sp, bc, de, hl, af;
+	un32 ime, ima;
+	bool halted, double_speed;
+} cpu_t;
