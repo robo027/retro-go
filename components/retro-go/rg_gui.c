@@ -1056,10 +1056,13 @@ int rg_gui_debug_menu(const rg_gui_option_t *extra_options)
 
 static rg_gui_event_t slot_select_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
-    #define draw_status(x...) snprintf(buffer, sizeof(buffer), x); \
-        rg_gui_draw_text(2, 18, gui.screen_width - 4, buffer, C_WHITE, C_BLACK, RG_TEXT_ALIGN_CENTER);
+    size_t margin = TEXT_RECT("ABC", 0).height;
     rg_image_t *img, *resampled;
     char buffer[100];
+
+    #define draw_status(x...) snprintf(buffer, sizeof(buffer), x); \
+        rg_gui_draw_text(2, margin + 2, gui.screen_width - 4, buffer, C_WHITE, C_BLACK, RG_TEXT_ALIGN_CENTER);
+
     if (event == RG_DIALOG_FOCUS)
     {
         char *savefile = rg_emu_get_path(RG_PATH_SAVE_STATE + option->id, rg_system_get_app()->romPath);
@@ -1069,21 +1072,21 @@ static rg_gui_event_t slot_select_cb(rg_gui_option_t *option, rg_gui_event_t eve
             draw_status("Loading preview...");
             if ((img = rg_image_load_from_file(imgfile, 0)))
             {
-                if ((resampled = rg_image_copy_resampled(img, gui.screen_width, gui.screen_height - 32, 0)))
+                if ((resampled = rg_image_copy_resampled(img, gui.screen_width, gui.screen_height - margin * 2, 0)))
                 {
                     rg_image_free(img);
                     img = resampled;
                 }
-                rg_gui_draw_image(0, 16, gui.screen_width, gui.screen_height - 32, img);
+                rg_gui_draw_image(0, margin, 0, 0, img);
                 rg_image_free(img);
             }
-            rg_gui_draw_rect(0, 16, gui.screen_width, gui.screen_height - 32, 2, C_BLUE, img ? -1 : C_BLACK);
+            rg_gui_draw_rect(0, margin, gui.screen_width, gui.screen_height - margin * 2, 2, C_BLUE, img ? -1 : C_BLACK);
             free(imgfile);
             draw_status("Slot %d", option->id);
         }
         else
         {
-            rg_gui_draw_rect(0, 16, gui.screen_width, gui.screen_height - 32, 2, C_RED, C_BLACK);
+            rg_gui_draw_rect(0, margin, gui.screen_width, gui.screen_height - margin * 2, 2, C_RED, C_BLACK);
             draw_status("Slot %d is empty", option->id);
         }
         free(savefile);
