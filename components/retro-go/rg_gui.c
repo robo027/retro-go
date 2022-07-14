@@ -1135,12 +1135,12 @@ int rg_gui_game_menu(void)
 
     if (sel == 3000)
     {
-        const rg_gui_option_t choices[] = {
+        sel = rg_gui_dialog("Reset Emulation?", &(rg_gui_option_t[]){
             {3002, "Soft reset", NULL, 1, NULL},
             {3003, "Hard reset", NULL, 1, NULL},
+            {0, "Cancel", NULL, 1, NULL},
             RG_DIALOG_CHOICE_LAST
-        };
-        sel = rg_gui_dialog("Reset Emulation?", choices, 0);
+        }, 0);
     }
 
     switch (sel)
