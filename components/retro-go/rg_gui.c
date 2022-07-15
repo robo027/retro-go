@@ -1,3 +1,4 @@
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -29,8 +30,6 @@ static struct {
     rg_gui_theme_t theme;
     bool initialized;
 } gui;
-
-static int savestate_slot = 0;
 
 // static const char *SETTING_FONTSIZE     = "FontSize";
 static const char *SETTING_FONTTYPE     = "FontType";
@@ -567,10 +566,10 @@ void rg_gui_draw_dialog(const char *header, const rg_gui_option_t *options, int 
     rg_gui_flush();
 }
 
-int rg_gui_dialog(const char *header, const rg_gui_option_t *options_const, int selected)
+int rg_gui_dialog(const char *header, const rg_gui_option_t *options_const, int selected_index)
 {
     int options_count = get_dialog_items_count(options_const);
-    int sel = selected < 0 ? (options_count + selected) : selected;
+    int sel = selected_index < 0 ? (options_count + selected_index) : selected_index;
     int sel_old = -1;
 
     // We create a copy of options because the callbacks might modify it (ie option->value)
@@ -694,7 +693,7 @@ int rg_gui_dialog(const char *header, const rg_gui_option_t *options_const, int 
     return sel < 0 ? sel : options[sel].id;
 }
 
-bool rg_gui_confirm(const char *title, const char *message, bool yes_selected)
+bool rg_gui_confirm(const char *title, const char *message, bool default_yes)
 {
     const rg_gui_option_t options[] = {
         {0, (char *)message, NULL, -1, NULL},
@@ -703,7 +702,7 @@ bool rg_gui_confirm(const char *title, const char *message, bool yes_selected)
         {0, "No ", NULL, 1, NULL},
         RG_DIALOG_CHOICE_LAST
     };
-    return rg_gui_dialog(title, message ? options : options + 1, yes_selected ? -2 : -1) == 1;
+    return rg_gui_dialog(title, message ? options : options + 1, default_yes ? -2 : -1) == 1;
 }
 
 void rg_gui_alert(const char *title, const char *message)
@@ -1065,60 +1064,76 @@ int rg_gui_debug_menu(const rg_gui_option_t *extra_options)
 
 static rg_gui_event_t slot_select_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
-    size_t margin = TEXT_RECT("ABC", 0).height;
-    rg_image_t *img, *resampled;
-    char buffer[100];
-
     #define draw_status(x...) snprintf(buffer, sizeof(buffer), x); \
         rg_gui_draw_text(2, margin + 2, gui.screen_width - 4, buffer, C_WHITE, C_BLACK, RG_TEXT_ALIGN_CENTER);
-
     if (event == RG_DIALOG_FOCUS)
     {
-        char *savefile = rg_emu_get_path(RG_PATH_SAVE_STATE + option->id, rg_system_get_app()->romPath);
-        if (savefile && access(savefile, F_OK) == 0)
+        int slot_id = option->id & 0xFF;
+        size_t margin = TEXT_RECT("ABC", 0).height;
+        char buffer[100];
+        if (option->id & 0x100)
         {
-            char *imgfile = rg_emu_get_path(RG_PATH_SCREENSHOT + option->id, rg_system_get_app()->romPath);
             draw_status("Loading preview...");
-            if ((img = rg_image_load_from_file(imgfile, 0)))
-            {
-                if ((resampled = rg_image_copy_resampled(img, gui.screen_width, gui.screen_height - margin * 2, 0)))
-                {
-                    rg_image_free(img);
-                    img = resampled;
-                }
-                rg_gui_draw_image(0, margin, 0, 0, img);
-                rg_image_free(img);
-            }
-            rg_gui_draw_rect(0, margin, gui.screen_width, gui.screen_height - margin * 2, 2, C_BLUE, img ? -1 : C_BLACK);
+            char *imgfile = rg_emu_get_path(RG_PATH_SCREENSHOT + slot_id, rg_system_get_app()->romPath);
+            rg_image_t *img = rg_image_load_from_file(imgfile, 0);
+            rg_gui_draw_image(0, margin, gui.screen_width, gui.screen_height - margin * 2, true, img);
+            rg_gui_draw_rect(0, margin, gui.screen_width, gui.screen_height - margin * 2, 2, C_BLUE, -1);
+            draw_status((option->id & 0x200) ? "Slot %d (most recent)" : "Slot %d", slot_id);
+            rg_image_free(img);
             free(imgfile);
-            draw_status("Slot %d", option->id);
         }
         else
         {
             rg_gui_draw_rect(0, margin, gui.screen_width, gui.screen_height - margin * 2, 2, C_RED, C_BLACK);
-            draw_status("Slot %d is empty", option->id);
+            draw_status("Slot %d is empty", slot_id);
         }
-        free(savefile);
     }
-    #undef draw_status
-    if (event == RG_DIALOG_ENTER)
+    else if (event == RG_DIALOG_ENTER)
+    {
         return RG_DIALOG_CLOSE;
+    }
     return RG_DIALOG_VOID;
+    #undef draw_status
 }
 
-static bool slot_select(const char *title)
+static bool loadsave_dialog(bool save)
 {
-    const rg_gui_option_t choices[] = {
-        {0, "Slot 1", NULL,  1, &slot_select_cb},
-        {1, "Slot 2", NULL,  1, &slot_select_cb},
-        {2, "Slot 3", NULL,  1, &slot_select_cb},
-        {3, "Slot 4", NULL,  1, &slot_select_cb},
+    rg_gui_option_t choices[] = {
+        {0, "Slot 0", NULL,  1, &slot_select_cb},
+        {1, "Slot 1", NULL,  1, &slot_select_cb},
+        {2, "Slot 2", NULL,  1, &slot_select_cb},
+        {3, "Slot 3", NULL,  1, &slot_select_cb},
         RG_DIALOG_CHOICE_LAST
     };
-    int slot = rg_gui_dialog(title, choices, savestate_slot);
-    if (slot < 0) return false;
-    savestate_slot = slot;
-    return true;
+    const rg_app_t *app = rg_system_get_app();
+    int most_recent_time = -1;
+    int most_recent_id = -1;
+
+    for (size_t i = 0; i < 4; i++)
+    {
+        char *path = rg_emu_get_path(RG_PATH_SAVE_STATE + i, app->romPath);
+        struct stat st;
+        if (stat(path, &st) == 0)
+        {
+            choices[i].id |= 0x100;
+            if (st.st_mtime > most_recent_time) {
+                most_recent_id = i;
+                most_recent_time = st.st_mtime;
+            }
+        }
+        free(path);
+    }
+    if (most_recent_id != -1)
+        choices[most_recent_id].id |= 0x200;
+
+    int slot = rg_gui_dialog(save ? "Save" : "Load", choices, app->saveSlot);
+    if (slot == -1)
+        return false;
+    else if (save)
+        return rg_emu_save_state(slot & 0xFF);
+    else if (slot & 0x100)
+        return rg_emu_load_state(slot & 0xFF);
+    return false;
 }
 
 int rg_gui_game_menu(void)
@@ -1126,6 +1141,7 @@ int rg_gui_game_menu(void)
     const rg_gui_option_t choices[] = {
         {1000, "Save & Continue", NULL,  1, NULL},
         {2000, "Save & Quit", NULL, 1, NULL},
+        // {1000, "Save game", NULL, 1, NULL},
         {3001, "Load game", NULL, 1, NULL},
         {3000, "Reset", NULL, 1, NULL},
         #ifdef ENABLE_NETPLAY
@@ -1144,19 +1160,20 @@ int rg_gui_game_menu(void)
 
     if (sel == 3000)
     {
-        sel = rg_gui_dialog("Reset Emulation?", &(rg_gui_option_t[]){
+        const rg_gui_option_t choices[] = {
             {3002, "Soft reset", NULL, 1, NULL},
             {3003, "Hard reset", NULL, 1, NULL},
             {0, "Cancel", NULL, 1, NULL},
             RG_DIALOG_CHOICE_LAST
-        }, 0);
+        };
+        sel = rg_gui_dialog("Reset Emulation?", choices, 0);
     }
 
     switch (sel)
     {
-        case 1000: if (slot_select("Save state")) rg_emu_save_state(savestate_slot); break;
-        case 2000: if (slot_select("Save state") && rg_emu_save_state(savestate_slot)) exit(0); break;
-        case 3001: if (slot_select("Load state")) rg_emu_load_state(savestate_slot); break;
+        case 1000: loadsave_dialog(true); break;
+        case 2000: if (loadsave_dialog(true)) exit(0); break;
+        case 3001: loadsave_dialog(false); break;
         case 3002: rg_emu_reset(false); break;
         case 3003: rg_emu_reset(true); break;
     #ifdef ENABLE_NETPLAY

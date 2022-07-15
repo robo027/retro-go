@@ -113,8 +113,8 @@ bool rg_image_save_to_file(const char *filename, const rg_image_t *img, uint32_t
 void rg_image_free(rg_image_t *img);
 
 void rg_gui_show_info(const char *text, rg_color_t color, int timeout_ms);
-int  rg_gui_dialog(const char *header, const rg_gui_option_t *options, int selected_initial);
-bool rg_gui_confirm(const char *title, const char *message, bool yes_selected);
+int  rg_gui_dialog(const char *header, const rg_gui_option_t *options, int selected_index);
+bool rg_gui_confirm(const char *title, const char *message, bool default_yes);
 void rg_gui_alert(const char *title, const char *message);
 
 int rg_gui_options_menu(void);
