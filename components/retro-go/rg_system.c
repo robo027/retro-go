@@ -25,7 +25,6 @@
 #define SETTING_BOOT_PART   "BootPart"
 #define SETTING_BOOT_ARGS   "BootArgs"
 #define SETTING_BOOT_FLAGS  "BootFlags"
-#define SETTING_RTC_TIME    "RTCTime"
 
 #define RG_STRUCT_MAGIC 0x12345678
 
@@ -58,50 +57,46 @@ static bool initialized = false;
 #define WDT_RELOAD(val) wdtCounter = (val)
 
 
-static const char *htime(time_t ts)
-{
-    static char buffer[32];
-    strftime(buffer, sizeof(buffer), "%a, %d %b %Y %T", gmtime(&ts));
-    return buffer;
-}
-
 static void rtc_time_init(void)
 {
-    const char *source = "settings";
-    time_t timestamp;
+    struct timeval timestamp = {1580446800, 0}; // 2020-01-31 00:00:00, first retro-go commit :)
+    FILE *fp;
 #if 0
     if (rg_i2c_read(0x68, 0x00, data, sizeof(data)))
     {
-        source = "DS3231";
+        RG_LOGI("Time loaded from DS3231\n");
     }
     else
 #endif
-    if (!(timestamp = rg_settings_get_number(NS_GLOBAL, SETTING_RTC_TIME, 0)))
+    if ((fp = fopen(RG_BASE_PATH_CONFIG "/clock.bin", "rb")))
     {
-        timestamp = 946702800; // 2000-01-01 00:00:00
-        source = "hardcoded";
+        fread(&timestamp, sizeof(timestamp), 1, fp);
+        fclose(fp);
+        RG_LOGI("Time loaded from storage\n");
     }
 
-    settimeofday(&(struct timeval){timestamp, 0}, NULL);
-
-    RG_LOGI("Time is now: %s\n", htime(time(NULL)));
-    RG_LOGI("Time loaded from %s\n", source);
+    settimeofday(&timestamp, NULL);
+    gettimeofday(&timestamp, NULL); // Read it back to be sure it's set
+    RG_LOGI("Time is now: %s\n", asctime(localtime(&timestamp.tv_sec)));
 }
 
 static void rtc_time_save(void)
 {
-    time_t now = time(NULL);
+    struct timeval timestamp = {time(NULL), 0};
+    FILE *fp;
+    // We always save to storage in case the RTC disappears.
+    if ((fp = fopen(RG_BASE_PATH_CONFIG "/clock.bin", "wb")))
+    {
+        fwrite(&timestamp, sizeof(timestamp), 1, fp);
+        fclose(fp);
+        RG_LOGI("System time saved to storage.\n");
+    }
 #if 0
     if (rg_i2c_write(0x68, 0x00, data, sizeof(data)))
     {
         RG_LOGI("System time saved to DS3231.\n");
     }
-    else
 #endif
-    {
-        rg_settings_set_number(NS_GLOBAL, SETTING_RTC_TIME, now);
-        RG_LOGI("System time saved to settings.\n");
-    }
 }
 
 static void exit_handler(void)
@@ -291,6 +286,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, const rg
         .sampleRate = sampleRate,
         .logLevel = RG_LOG_INFO,
         .isLauncher = strcmp(esp_app->project_name, RG_APP_LAUNCHER) == 0,
+        .saveSlot = 0,
         .romPath = NULL,
         .mainTaskHandle = xTaskGetCurrentTaskHandle(),
         .options = options, // TO DO: We should make a copy of it
@@ -308,6 +304,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, const rg
         app.configNs = rg_settings_get_string(NS_GLOBAL, SETTING_BOOT_NAME, app.name);
         app.romPath = rg_settings_get_string(NS_GLOBAL, SETTING_BOOT_ARGS, "");
         app.bootFlags = rg_settings_get_number(NS_GLOBAL, SETTING_BOOT_FLAGS, 0);
+        app.saveSlot = (app.bootFlags & RG_BOOT_SLOT_MASK) >> 4;
     }
 
     rg_input_init(); // Must be first for the qtpy (input -> aw9523 -> lcd)
@@ -442,7 +439,7 @@ char *rg_emu_get_path(rg_path_type_t pathType, const char *filename)
     return buffer;
 }
 
-bool rg_emu_load_state(int slot)
+bool rg_emu_load_state(uint8_t slot)
 {
     bool success = false;
 
@@ -452,7 +449,7 @@ bool rg_emu_load_state(int slot)
         return false;
     }
 
-    char *filename = rg_emu_get_path(RG_PATH_SAVE_STATE + slot, app.romPath);
+    char *filename = rg_emu_get_path(RG_PATH_SAVE_STATE | slot, app.romPath);
     RG_LOGI("Loading state from '%s'.\n", filename);
     WDT_RELOAD(30 * 1000000);
 
@@ -462,6 +459,10 @@ bool rg_emu_load_state(int slot)
     {
         RG_LOGE("Load failed!\n");
     }
+    else
+    {
+        app.saveSlot = slot;
+    }
 
     WDT_RELOAD(WDT_TIMEOUT);
     free(filename);
@@ -469,7 +470,7 @@ bool rg_emu_load_state(int slot)
     return success;
 }
 
-bool rg_emu_save_state(int slot)
+bool rg_emu_save_state(uint8_t slot)
 {
     if (!app.romPath || !app.handlers.saveState)
     {
@@ -477,7 +478,7 @@ bool rg_emu_save_state(int slot)
         return false;
     }
 
-    char *filename = rg_emu_get_path(RG_PATH_SAVE_STATE + slot, app.romPath);
+    char *filename = rg_emu_get_path(RG_PATH_SAVE_STATE | slot, app.romPath);
     char tempname[RG_PATH_MAX + 8];
     bool success = false;
 
@@ -525,11 +526,14 @@ bool rg_emu_save_state(int slot)
             app.bootFlags |= RG_BOOT_RESUME;
             rg_settings_set_number(NS_GLOBAL, SETTING_BOOT_FLAGS, app.bootFlags);
         }
+
+        app.saveSlot = slot;
     }
 
     #undef tempname
     free(filename);
 
+    rtc_time_save();
     rg_storage_commit();
     rg_system_set_led(0);
 
@@ -562,7 +566,7 @@ bool rg_emu_screenshot(const char *filename, int width, int height)
     return success;
 }
 
-bool rg_emu_reset(int hard)
+bool rg_emu_reset(bool hard)
 {
     if (app.handlers.reset)
         return app.handlers.reset(hard);
