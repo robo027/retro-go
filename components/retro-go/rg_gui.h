@@ -78,6 +78,7 @@ struct rg_gui_option_s
     char *value; /* const */
     int flags;
     rg_gui_callback_t update_cb;
+    // void *user_arg;
 };
 
 #define RG_DIALOG_FLAG_DISABLED  0 // (1 << 0)
@@ -101,7 +102,7 @@ void rg_gui_copy_buffer(int left, int top, int width, int height, int stride, co
 void rg_gui_draw_rect(int x_pos, int y_pos, int width, int height, int border_size, rg_color_t border_color, rg_color_t fill_color);
 void rg_gui_draw_battery(int x_pos, int y_pos);
 void rg_gui_draw_dialog(const char *header, const rg_gui_option_t *options, int sel);
-void rg_gui_draw_image(int x_pos, int y_pos, int width, int height, const rg_image_t *img);
+void rg_gui_draw_image(int x_pos, int y_pos, int width, int height, bool resample, const rg_image_t *img);
 void rg_gui_draw_hourglass(void); // This should be moved to system or display...
 
 rg_image_t *rg_image_load_from_file(const char *filename, uint32_t flags);

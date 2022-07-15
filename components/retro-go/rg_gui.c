@@ -330,16 +330,25 @@ void rg_gui_draw_rect(int x_pos, int y_pos, int width, int height, int border_si
     }
 }
 
-void rg_gui_draw_image(int x_pos, int y_pos, int max_width, int max_height, const rg_image_t *img)
+void rg_gui_draw_image(int x_pos, int y_pos, int width, int height, bool resample, const rg_image_t *img)
 {
-    if (img)
+    if (img && resample && (width && height) && (width != img->width || height != img->height))
     {
-        int width = max_width ? RG_MIN(max_width, img->width) : img->width;
-        int height = max_height ? RG_MIN(max_height, img->height) : img->height;
-        rg_gui_copy_buffer(x_pos, y_pos, width, height, img->width * 2, img->data);
+        RG_LOGI("Resampling image (%dx%d => %dx%d)\n", img->width, img->height, width, height);
+        rg_image_t *new_img = rg_image_copy_resampled(img, width, height, 0);
+        rg_gui_copy_buffer(x_pos, y_pos, width, height, new_img->width * 2, new_img->data);
+        rg_image_free(new_img);
+    }
+    else if (img)
+    {
+        int draw_width = width ? RG_MIN(width, img->width) : img->width;
+        int draw_height = height ? RG_MIN(height, img->height) : img->height;
+        rg_gui_copy_buffer(x_pos, y_pos, draw_width, draw_height, img->width * 2, img->data);
     }
     else // We fill a rect to show something is missing instead of abort...
-        rg_gui_draw_rect(x_pos, y_pos, max_width, max_height, 2, C_RED, C_BLACK);
+    {
+        rg_gui_draw_rect(x_pos, y_pos, width, height, 2, C_RED, C_BLACK);
+    }
 }
 
 void rg_gui_draw_battery(int x_pos, int y_pos)
