@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "rg_image.h"
+
 typedef enum
 {
     RG_DIALOG_VOID,
@@ -40,14 +42,6 @@ typedef struct
     char name[16];
     uint8_t data[];
 } rg_font_t;
-
-// rg_image_t contains an RGB565 (LE) image
-typedef struct
-{
-    uint16_t width;
-    uint16_t height;
-    uint16_t data[];
-} rg_image_t;
 
 // color must accept 0-0xFFFF and -1 (transparent)
 typedef int rg_color_t;
@@ -104,13 +98,6 @@ void rg_gui_draw_battery(int x_pos, int y_pos);
 void rg_gui_draw_dialog(const char *header, const rg_gui_option_t *options, int sel);
 void rg_gui_draw_image(int x_pos, int y_pos, int width, int height, bool resample, const rg_image_t *img);
 void rg_gui_draw_hourglass(void); // This should be moved to system or display...
-
-rg_image_t *rg_image_load_from_file(const char *filename, uint32_t flags);
-rg_image_t *rg_image_load_from_memory(const uint8_t *data, size_t data_len, uint32_t flags);
-rg_image_t *rg_image_alloc(size_t width, size_t height);
-rg_image_t *rg_image_copy_resampled(const rg_image_t *img, int new_width, int new_height, int new_format);
-bool rg_image_save_to_file(const char *filename, const rg_image_t *img, uint32_t flags);
-void rg_image_free(rg_image_t *img);
 
 void rg_gui_show_info(const char *text, rg_color_t color, int timeout_ms);
 int  rg_gui_dialog(const char *header, const rg_gui_option_t *options, int selected_index);
