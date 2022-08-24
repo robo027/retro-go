@@ -2,6 +2,9 @@
 
 #include "pce-go.h"
 
+#define EXPECT_UNLIKELY(n) __builtin_expect((n) != 0, 0)
+#define EXPECT_LIKELY(n) __builtin_expect((n) != 0, 1)
+
 // System clocks (hz)
 #define CLOCK_MASTER           (21477270)
 #define CLOCK_TIMER            (CLOCK_MASTER / 3)
@@ -126,11 +129,11 @@ typedef struct {
 	//
 	int ScrollYDiff;
 
-	// Number of executed CPU cycles
-	uint32_t Cycles;
+	// Number of executed CPU_PCE cycles
+	int32_t Cycles;
 
-	// Run CPU until Cycles >= MaxCycles
-	uint32_t MaxCycles;
+	// Run CPU_PCE until Cycles >= MaxCycles
+	int32_t MaxCycles;
 
 	// Value of each of the MMR registers
 	uint8_t MMR[8];
@@ -142,16 +145,21 @@ typedef struct {
 	// Street Fighter 2 Mapper
 	uint8_t SF2;
 
+	// Game Genie Patch
+	uint8_t rp_count;
+	char **patchs;
+	
 	// Remanence latch
 	uint8_t io_buffer;
+	uint16_t VBlankFL;
 
 	// Timer
 	struct {
-		uint32_t cycles_per_line;
-		uint32_t cycles_counter;
-		uint32_t counter;
-		uint32_t reload;
-		uint32_t running;
+		uint16_t cycles_per_line;
+		int32_t cycles_counter;
+		uint8_t counter;
+		uint8_t reload;
+		uint8_t running;
 	} Timer;
 
 	// Joypad
@@ -163,6 +171,8 @@ typedef struct {
 
 	// Video Color Encoder
 	struct {
+		uint8_t CR;				/* VCE Control */
+		uint8_t dot_clock;		/* Dot Clock(5, 7, or 10 MHz = 0, 1, 2) */
 		UWord regs[0x200];		/* palette info */
 		UWord reg;				/* currently selected color */
 	} VCE;
@@ -176,8 +186,6 @@ typedef struct {
 		uint8_t satb;			/* DMA transfer status to happen in vblank */
 		uint8_t mode_chg;       /* Video mode change needed at next frame */
 		uint32_t pending_irqs;	/* Pending VDC IRQs (we use it as a stack of 4bit events) */
-		uint32_t screen_width;	/* Effective resolution updated by mode_chg */
-		uint32_t screen_height;	/* Effective resolution updated by mode_chg */
 	} VDC;
 
 	// Programmable Sound Generator
@@ -207,12 +215,18 @@ extern uint8_t *PageW[8];
 
 #define IO_VDC_REG           PCE.VDC.regs
 #define IO_VDC_REG_ACTIVE    PCE.VDC.regs[PCE.VDC.reg]
-#define IO_VDC_REG_INC(reg)  {unsigned _i[] = {1,32,64,128}; PCE.VDC.regs[(reg)].W += _i[(PCE.VDC.regs[CR].W >> 11) & 3];}
+#define IO_VDC_REG_INC(reg)  {uint8_t _i[] = {1,32,64,128}; PCE.VDC.regs[(reg)].W += _i[(PCE.VDC.regs[CR].W >> 11) & 3];}
 #define IO_VDC_STATUS(bit)   ((PCE.VDC.status >> bit) & 1)
 #define IO_VDC_MINLINE       (IO_VDC_REG[VPR].B.h + IO_VDC_REG[VPR].B.l)
 #define IO_VDC_MAXLINE       (IO_VDC_MINLINE + IO_VDC_REG[VDW].W)
 #define IO_VDC_SCREEN_WIDTH  ((IO_VDC_REG[HDR].B.l + 1) * 8)
 #define IO_VDC_SCREEN_HEIGHT (IO_VDC_REG[VDW].W + 1)
+#define M_vdc_HSW (IO_VDC_REG[HSR].B.l & 0x1F) // Horizontal Synchro Width
+#define M_vdc_HDS (IO_VDC_REG[HSR].B.h & 0x7F) // Horizontal Display Start
+#define M_vdc_HDW (IO_VDC_REG[HDR].B.l & 0x7F) // Horizontal Display Width
+#define M_vdc_HDE (IO_VDC_REG[HDR].B.h & 0x7F) // Horizontal Display End
+
+
 
 // Interrupt enabled
 #define SATBIntON  (IO_VDC_REG[DCR].W & 0x01)
@@ -250,7 +264,7 @@ uint8_t pce_readIO(uint16_t A);
 #if USE_MEM_MACROS
 
 #define pce_read8(addr) ({							\
-	uint16_t a = (addr); 							\
+	uint16_t a = (addr);							\
 	uint8_t *page = PageR[a >> 13]; 				\
 	(page == PCE.IOAREA) ? pce_readIO(a) : page[a]; \
 })
@@ -259,17 +273,17 @@ uint8_t pce_readIO(uint16_t A);
 	uint16_t a = (addr), b = (byte); 				\
 	uint8_t *page = PageW[a >> 13]; 				\
 	if (page == PCE.IOAREA) pce_writeIO(a, b); 		\
-	else page[a] = b;								\
+	else page[a] = b;							    \
 }
 
 #define pce_read16(addr) ({							\
 	uint16_t a = (addr); 							\
-	*((uint16_t*)(PageR[a >> 13] + a));				\
+	*((uint16_t*)(PageR[a >> 13] + a));			    \
 })
 
 #define pce_write16(addr, word) {					\
 	uint16_t a = (addr), w = (word); 				\
-	*((uint16_t*)(PageW[a >> 13] + a)) = w;			\
+	*((uint16_t*)(PageR[a >> 13] + a)) = w;		    \
 }
 
 #else
@@ -305,7 +319,7 @@ pce_read16(uint16_t addr)
 static inline void
 pce_write16(uint16_t addr, uint16_t word)
 {
-	*((uint16_t*)(PageW[addr >> 13] + (addr))) = word;
+	*((uint16_t*)(PageR[addr >> 13] + (addr))) = word;
 }
 
 #endif
