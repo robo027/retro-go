@@ -2,6 +2,9 @@
 
 #include "pce-go.h"
 
+#define EXPECT_UNLIKELY(n) __builtin_expect((n) != 0, 0)
+#define EXPECT_LIKELY(n) __builtin_expect((n) != 0, 1)
+
 // System clocks (hz)
 #define CLOCK_MASTER           (21477270)
 #define CLOCK_TIMER            (CLOCK_MASTER / 3)
@@ -152,11 +155,11 @@ typedef struct {
 
 	// Timer
 	struct {
-		uint16_t cycles_per_line;
-		int32_t cycles_counter;
-		uint8_t counter;
-		uint8_t reload;
-		uint8_t running;
+		uint32_t cycles_per_line;
+		uint32_t cycles_counter;
+		uint32_t counter;
+		uint32_t reload;
+		uint32_t running;
 	} Timer;
 
 	// Joypad
@@ -183,6 +186,8 @@ typedef struct {
 		uint8_t satb;			/* DMA transfer status to happen in vblank */
 		uint8_t mode_chg;       /* Video mode change needed at next frame */
 		uint32_t pending_irqs;	/* Pending VDC IRQs (we use it as a stack of 4bit events) */
+		uint32_t screen_width;	/* Effective resolution updated by mode_chg */
+		uint32_t screen_height;	/* Effective resolution updated by mode_chg */
 	} VDC;
 
 	// Programmable Sound Generator
@@ -212,7 +217,7 @@ extern uint8_t *PageW[8];
 
 #define IO_VDC_REG           PCE.VDC.regs
 #define IO_VDC_REG_ACTIVE    PCE.VDC.regs[PCE.VDC.reg]
-#define IO_VDC_REG_INC(reg)  {uint8_t _i[] = {1,32,64,128}; PCE.VDC.regs[(reg)].W += _i[(PCE.VDC.regs[CR].W >> 11) & 3];}
+#define IO_VDC_REG_INC(reg)  {unsigned _i[] = {1,32,64,128}; PCE.VDC.regs[(reg)].W += _i[(PCE.VDC.regs[CR].W >> 11) & 3];}
 #define IO_VDC_STATUS(bit)   ((PCE.VDC.status >> bit) & 1)
 #define IO_VDC_MINLINE       (IO_VDC_REG[VPR].B.h + IO_VDC_REG[VPR].B.l)
 #define IO_VDC_MAXLINE       (IO_VDC_MINLINE + IO_VDC_REG[VDW].W)

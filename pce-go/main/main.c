@@ -123,14 +123,16 @@ void osd_input_read(uint8_t joypads[8])
     uint32_t joystick = rg_input_read_gamepad();
     uint32_t buttons = 0;
 
-    // TO DO: We should pause the audio task when entering a menu...
-    if (joystick & RG_KEY_MENU)
+    if (joystick & (RG_KEY_MENU|RG_KEY_OPTION))
     {
-        rg_gui_game_menu();
-    }
-    else if (joystick & RG_KEY_OPTION)
-    {
-        rg_gui_options_menu();
+        emulationPaused = true;
+        if (joystick & RG_KEY_MENU)
+            rg_gui_game_menu();
+        else
+            rg_gui_options_menu();
+        frameTime = get_frame_time(app->refreshRate * app->speed);
+        rg_audio_set_sample_rate(app->sampleRate * app->speed);
+        emulationPaused = false;
     }
 
     if (joystick & RG_KEY_LEFT)   buttons |= JOY_LEFT;
@@ -151,8 +153,11 @@ static void audioTask(void *arg)
 
     while (1)
     {
-        psg_update(audiobuffer, AUDIO_BUFFER_LENGTH, downsample);
-        rg_audio_submit((rg_audio_sample_t*)audiobuffer, AUDIO_BUFFER_LENGTH);
+        // TODO: Clearly we need to add a better way to remain in sync with the main task...
+        while (emulationPaused)
+            vTaskDelay(1);
+        psg_update((void*)audiobuffer, AUDIO_BUFFER_LENGTH, downsample);
+        rg_audio_submit(audiobuffer, AUDIO_BUFFER_LENGTH);
     }
 
     vTaskDelete(NULL);
@@ -254,7 +259,6 @@ void app_main(void)
         updates[1].palette[i] = color;
     }
     free(palette);
-    osd_gfx_set_mode(256, 240);
 
     InitPCE(AUDIO_SAMPLE_RATE, true, app->romPath);
 
