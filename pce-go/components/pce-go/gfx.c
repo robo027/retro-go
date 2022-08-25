@@ -55,11 +55,11 @@ static struct {
 static void // Do not inline
 draw_tiles(uint8_t *screen_buffer, int Y1, int Y2, int scroll_x, int scroll_y)
 {
-	const uint8_t _bg_w[] = { 32, 64, 128, 128 };
-	const uint8_t _bg_h[] = { 32, 64 };
-	
+	uint32_t _bg_w[] = { 32, 64, 128, 128 };
+	uint32_t _bg_h[] = { 32, 64 };
+
 	uint32_t bg_w = _bg_w[(IO_VDC_REG[MWR].W >> 4) & 3]; // Bits 5-4 select the width
-    uint32_t bg_h = _bg_h[(IO_VDC_REG[MWR].W >> 6) & 1]; // Bit 6 selects the height
+	uint32_t bg_h = _bg_h[(IO_VDC_REG[MWR].W >> 6) & 1]; // Bit 6 selects the height
 
 	int XW, no, x, y, h, offset;
 	uint8_t *PP, *PAL, *P, *C;
@@ -136,7 +136,7 @@ draw_tiles(uint8_t *screen_buffer, int Y1, int Y2, int scroll_x, int scroll_y)
 	Draw sprite C to framebuffer P
 */
 static void // Do not inline (take advantage of xtensa's windowed registers)
-draw_sprite(uint8_t *P, uint16_t *C, int height, uint16_t attr)
+draw_sprite(uint8_t *P, uint16_t *C, int height, uint32_t attr)
 {
 	uint8_t *PAL = &PCE.Palette[256 + ((attr & 0xF) << 4)];
 
@@ -230,7 +230,7 @@ draw_sprites(uint8_t *screen_buffer, int Y1, int Y2, int priority)
 
 	for (int n = 63; n >= 0; n--) {
 		sprite_t *spr = (sprite_t *)PCE.SPRAM + n;
-		uint16_t attr = spr->attr;
+		uint32_t attr = spr->attr;
 
 		if (((attr >> 7) & 1) != priority)
 			continue;

@@ -2,9 +2,6 @@
 
 #include "pce-go.h"
 
-#define EXPECT_UNLIKELY(n) __builtin_expect((n) != 0, 0)
-#define EXPECT_LIKELY(n) __builtin_expect((n) != 0, 1)
-
 // System clocks (hz)
 #define CLOCK_MASTER           (21477270)
 #define CLOCK_TIMER            (CLOCK_MASTER / 3)
