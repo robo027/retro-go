@@ -244,8 +244,8 @@ void app_main(void)
 
     app = rg_system_init(AUDIO_SAMPLE_RATE, &handlers, options);
 
-    framebuffers[0] = rg_alloc(XBUF_WIDTH * XBUF_HEIGHT, MEM_FAST);
-    framebuffers[1] = rg_alloc(XBUF_WIDTH * XBUF_HEIGHT, MEM_FAST);
+    framebuffers[0] = rg_alloc(XBUF_WIDTH * XBUF_HEIGHT + 2048, MEM_FAST);
+    framebuffers[1] = rg_alloc(XBUF_WIDTH * XBUF_HEIGHT + 2048, MEM_FAST);
 
     overscan = rg_settings_get_number(NS_APP, SETTING_OVERSCAN, 1);
     downsample = rg_settings_get_number(NS_APP, SETTING_AUDIOTYPE, 0);
