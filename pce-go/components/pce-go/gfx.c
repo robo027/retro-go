@@ -562,7 +562,7 @@ gfx_run(void)
 		gfx_context.latched = 0;
 		last_line_counter = 0;
 		line_counter = 0;
-		PCE.ScrollYDiff = 0;		
+		PCE.ScrollYDiff = 0;
 	}
 
 	if ( need_vbi ){

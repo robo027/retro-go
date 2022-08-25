@@ -43,23 +43,23 @@ pce_reset(bool hard)
     PCE.Timer.cycles_per_line = 113;
     Cycles = 0;
 
-    // Reset sound generator values
-    for (int i = 0; i < PSG_CHANNELS; i++) {
-        PCE.PSG.chan[i].control = 0x80;
-    }
+	// Reset sound generator values
+	for (int i = 0; i < PSG_CHANNELS; i++) {
+		PCE.PSG.chan[i].control = 0x80;
+	}
 
-    // Reset memory banking
-    pce_bank_set(7, 0x00);
-    pce_bank_set(6, 0x05);
-    pce_bank_set(5, 0x04);
-    pce_bank_set(4, 0x03);
-    pce_bank_set(3, 0x02);
-    pce_bank_set(2, 0x01);
-    pce_bank_set(1, 0xF8);
-    pce_bank_set(0, 0xFF);
+	// Reset memory banking
+	pce_bank_set(7, 0x00);
+	pce_bank_set(6, 0x05);
+	pce_bank_set(5, 0x04);
+	pce_bank_set(4, 0x03);
+	pce_bank_set(3, 0x02);
+	pce_bank_set(2, 0x01);
+	pce_bank_set(1, 0xF8);
+	pce_bank_set(0, 0xFF);
 
-    // Reset CPU_PCE
-    h6280_reset();
+	// Reset CPU
+	h6280_reset();
 }
 
 
@@ -69,21 +69,19 @@ pce_reset(bool hard)
 int
 pce_init(void)
 {
-    for (int i = 0; i < 0xFF; i++) {
-        PCE.MemoryMapR[i] = PCE.NULLRAM;
-        PCE.MemoryMapW[i] = PCE.NULLRAM;
-    }
+	for (int i = 0; i < 0xFF; i++) {
+		PCE.MemoryMapR[i] = PCE.NULLRAM;
+		PCE.MemoryMapW[i] = PCE.NULLRAM;
+	}
 
-    PCE.MemoryMapR[0xF8] = PCE.RAM;
-    PCE.MemoryMapW[0xF8] = PCE.RAM;
-    PCE.MemoryMapR[0xFF] = PCE.IOAREA;
-    PCE.MemoryMapW[0xFF] = PCE.IOAREA;
-    PCE.rp_count = 0;
-    PCE.patchs = NULL;
+	PCE.MemoryMapR[0xF8] = PCE.RAM;
+	PCE.MemoryMapW[0xF8] = PCE.RAM;
+	PCE.MemoryMapR[0xFF] = PCE.IOAREA;
+	PCE.MemoryMapW[0xFF] = PCE.IOAREA;
 
-    // pce_reset();
+	// pce_reset();
 
-    return 0;
+	return 0;
 }
 
 
@@ -103,8 +101,10 @@ pce_pause(void)
 void
 pce_term(void)
 {
-    if (PCE.ExRAM) free(PCE.ExRAM);
-    if (PCE.ROM) free(PCE.ROM);
+	free(PCE.ExRAM);
+	PCE.ExRAM = NULL;
+	free(PCE.ROM);
+	PCE.ROM = NULL;
 }
 
 
@@ -137,37 +137,37 @@ pce_run(void)
 static inline void
 cart_write(uint16_t A, uint8_t V)
 {
-    TRACE_IO("Cart Write %02x at %04x\n", V, A);
+	TRACE_IO("Cart Write %02x at %04x\n", V, A);
 
-    // SF2 Mapper
-    if (A >= 0xFFF0 && PCE.ROM_SIZE >= 0xC0)
-    {
-        if (PCE.SF2 != (A & 3))
-        {
-            PCE.SF2 = A & 3;
-            uint8_t *base = PCE.ROM_DATA + PCE.SF2 * (512 * 1024);
-            for (int i = 0x40; i < 0x80; i++)
-            {
-                PCE.MemoryMapR[i] = base + i * 0x2000;
-            }
-            for (int i = 0; i < 8; i++)
-            {
-                if (PCE.MMR[i] >= 0x40 && PCE.MMR[i] < 0x80)
-                    pce_bank_set(i, PCE.MMR[i]);
-            }
-        }
-    }
+	// SF2 Mapper
+	if (A >= 0xFFF0 && PCE.ROM_SIZE >= 0xC0)
+	{
+		if (PCE.SF2 != (A & 3))
+		{
+			PCE.SF2 = A & 3;
+			uint8_t *base = PCE.ROM_DATA + PCE.SF2 * (512 * 1024);
+			for (int i = 0x40; i < 0x80; i++)
+			{
+				PCE.MemoryMapR[i] = base + i * 0x2000;
+			}
+			for (int i = 0; i < 8; i++)
+			{
+				if (PCE.MMR[i] >= 0x40 && PCE.MMR[i] < 0x80)
+					pce_bank_set(i, PCE.MMR[i]);
+			}
+		}
+	}
 }
 
 
-inline uint8_t
+IRAM_ATTR inline uint8_t
 pce_readIO(uint16_t A)
 {
-    uint8_t ret = 0xFF; // Open Bus
+	uint8_t ret = 0xFF; // Open Bus
 
-    // The last read value in 0800-017FF is read from the io buffer
-    if (A >= 0x800 && A < 0x1800)
-        ret = PCE.io_buffer;
+	// The last read value in 0800-017FF is read from the io buffer
+	if (A >= 0x800 && A < 0x1800)
+		ret = PCE.io_buffer;
 
     switch (A & 0x1F00) {
     case 0x0000:                /* VDC */
@@ -270,61 +270,61 @@ pce_readIO(uint16_t A)
         }
         break;
 
-    case 0x1A00:                // Arcade Card
-        MESSAGE_INFO("Arcade Card not supported : 0x%04X\n", A);
-        break;
+	case 0x1A00:                // Arcade Card
+		MESSAGE_INFO("Arcade Card not supported : 0x%04X\n", A);
+		break;
 
-    case 0x1800:                // CD-ROM extention
-    case 0x18C0:                // Super System Card
-        MESSAGE_INFO("CD Emulation not implemented : 0x%04X\n", A);
-        break;
-    }
+	case 0x1800:                // CD-ROM extention
+	case 0x18C0:                // Super System Card
+		MESSAGE_INFO("CD Emulation not implemented : 0x%04X\n", A);
+		break;
+	}
 
-    TRACE_IO("IO Read %02x at %04x\n", ret, A);
+	TRACE_IO("IO Read %02x at %04x\n", ret, A);
 
-    // The last read value in 0800-017FF is saved in the io buffer
-    if (A >= 0x800 && A < 0x1800)
-        PCE.io_buffer = ret;
+	// The last read value in 0800-017FF is saved in the io buffer
+	if (A >= 0x800 && A < 0x1800)
+		PCE.io_buffer = ret;
 
-    return ret;
+	return ret;
 }
 
 
-inline void
+IRAM_ATTR inline void
 pce_writeIO(uint16_t A, uint8_t V)
 {
-    TRACE_IO("IO Write %02x at %04x\n", V, A);
+	TRACE_IO("IO Write %02x at %04x\n", V, A);
 
-    // The last write value in 0800-017FF is saved in the io buffer
-    if (A >= 0x800 && A < 0x1800)
-        PCE.io_buffer = V;
+	// The last write value in 0800-017FF is saved in the io buffer
+	if (A >= 0x800 && A < 0x1800)
+		PCE.io_buffer = V;
 
-    switch (A & 0x1F00) {
-    case 0x0000:                /* VDC */
-        switch (A & 3) {
-        case 0: // Latch
-            PCE.VDC.reg = V & 31;
-            return;
+	switch (A & 0x1F00) {
+	case 0x0000:                /* VDC */
+		switch (A & 3) {
+		case 0: // Latch
+			PCE.VDC.reg = V & 31;
+			return;
 
-        case 1: // Not used
-            return;
+		case 1: // Not used
+			return;
 
-        case 2: // VDC data (LSB)
-            switch (PCE.VDC.reg & 31) {
-            case MAWR:                          // Memory Address Write Register
-                break;
+		case 2: // VDC data (LSB)
+			switch (PCE.VDC.reg & 31) {
+			case MAWR:                          // Memory Address Write Register
+				break;
 
-            case MARR:                          // Memory Address Read Register
-                break;
+			case MARR:                          // Memory Address Read Register
+				break;
 
-            case VWR:                           // VRAM Write Register
-                break;
+			case VWR:                           // VRAM Write Register
+				break;
 
-            case vdc3:                          // Unused
-                break;
+			case vdc3:                          // Unused
+				break;
 
-            case vdc4:                          // Unused
-                break;
+			case vdc4:                          // Unused
+				break;
 
             case CR:                            // Control Register
                 if (IO_VDC_REG_ACTIVE.B.l != V)
@@ -376,17 +376,17 @@ pce_writeIO(uint16_t A, uint8_t V)
                 PCE.VDC.mode_chg = 1;
                 break;
 
-            case DCR:                           // DMA Control
-                break;
+			case DCR:                           // DMA Control
+				break;
 
-            case SOUR:                          // DMA source address
-                break;
+			case SOUR:                          // DMA source address
+				break;
 
-            case DISTR:                         // DMA destination address
-                break;
+			case DISTR:                         // DMA destination address
+				break;
 
-            case LENR:                          // DMA transfer from VRAM to VRAM
-                break;
+			case LENR:                          // DMA transfer from VRAM to VRAM
+				break;
 
             case SATB:                          // DMA from VRAM to SATB
                 //PCE.VDC.satb = DMA_TRANSFER_PENDING;
@@ -658,18 +658,18 @@ pce_writeIO(uint16_t A, uint8_t V)
         }
         break;
 
-    case 0x1A00:                /* Arcade Card */
-        MESSAGE_INFO("Arcade Card not supported : %d into 0x%04X\n", V, A);
-        return;
+	case 0x1A00:                /* Arcade Card */
+		MESSAGE_INFO("Arcade Card not supported : %d into 0x%04X\n", V, A);
+		return;
 
-    case 0x1800:                /* CD-ROM extention */
-        MESSAGE_INFO("CD Emulation not implemented : %d 0x%04X\n", V, A);
-        return;
+	case 0x1800:                /* CD-ROM extention */
+		MESSAGE_INFO("CD Emulation not implemented : %d 0x%04X\n", V, A);
+		return;
 
-    case 0x1F00:                /* Street Fighter 2 Mapper */
-        cart_write(A, V);
-        return;
-    }
+	case 0x1F00:                /* Street Fighter 2 Mapper */
+		cart_write(A, V);
+		return;
+	}
 
-    MESSAGE_DEBUG("ignored I/O write: %04x,%02x at PC = %04X\n", A, V, CPU_PCE.PC);
+	MESSAGE_DEBUG("ignored I/O write: %04x,%02x at PC = %04X\n", A, V, CPU.PC);
 }
