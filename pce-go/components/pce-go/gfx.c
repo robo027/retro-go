@@ -2,7 +2,6 @@
 //
 #include <stdlib.h>
 #include <string.h>
-#include "utils.h"
 #include "pce.h"
 #include "gfx.h"
 
@@ -142,11 +141,13 @@ draw_sprite(uint8_t *P, uint16_t *C, int height, uint16_t attr)
 	uint8_t *PAL = &PCE.Palette[256 + ((attr & 0xF) << 4)];
 
 	bool hflip = attr & H_FLIP;
-	int inc = 1;//(attr & V_FLIP) ? -1 : 1;
-    if (attr & V_FLIP) {
+	int inc = 1; //(attr & V_FLIP) ? -1 : 1;
+
+	if (attr & V_FLIP) {
 		inc = -1;
 		C = C + height - 1;
 	}
+
 	for (int i = 0; i < height; i++, C += inc, P += XBUF_WIDTH) {
 
 		uint16_t J = C[0] | C[16] | C[32] | C[48];
@@ -226,7 +227,7 @@ draw_sprites(uint8_t *screen_buffer, int Y1, int Y2, int priority)
 
 	// We iterate sprites in reverse order because earlier sprites have
 	// higher priority and therefore must overwrite later sprites.
-	
+
 	for (int n = 63; n >= 0; n--) {
 		sprite_t *spr = (sprite_t *)PCE.SPRAM + n;
 		uint16_t attr = spr->attr;
@@ -281,14 +282,14 @@ draw_sprites(uint8_t *screen_buffer, int Y1, int Y2, int priority)
 			}
 		} else {
 			for (int yy = 0; yy <= cgy; yy += 16) {
-			int t = Y1 - y - yy;
-			int h = 16;
+				int t = Y1 - y - yy;
+				int h = 16;
 
-			if (t > 0) {
-				C += t * inc;
-				h -= t;
-				P += t * XBUF_WIDTH;
-			}
+				if (t > 0) {
+					C += t * inc;
+					h -= t;
+					P += t * XBUF_WIDTH;
+				}
 
 				if (h > Y2 - y - yy)
 					h = Y2 - y - yy;
@@ -307,7 +308,6 @@ draw_sprites(uint8_t *screen_buffer, int Y1, int Y2, int priority)
 				C += (h + 16 * 7);// * inc;
 			}
 		}
-
 	}
 }
 
@@ -338,7 +338,8 @@ sprite_hit_check(void)
 }
 
 
-void gfx_latch_context(int force)
+IRAM_ATTR void
+gfx_latch_context(int force)
 {
 	if (!gfx_context.latched || force) { // Context is already saved + we haven't render the line using it
 		gfx_context.scroll_x = IO_VDC_REG[BXR].W;

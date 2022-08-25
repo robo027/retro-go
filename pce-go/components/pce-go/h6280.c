@@ -1,10 +1,9 @@
-//  h6280.c - CPU_PCE Emulation
+//  h6280.c - CPU Emulation
 //
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "pce-go.h"
-#include "utils.h"
 #include "pce.h"
 
 #include "h6280_instr.h"
@@ -15,7 +14,7 @@
 h6280_t CPU_PCE;
 
 /**
- * Reset CPU_PCE
+ * Reset CPU
  **/
 void
 h6280_reset(void)
@@ -49,7 +48,7 @@ h6280_irq(int type)
 
 
 /**
- * CPU_PCE emulation
+ * CPU emulation
  **/
 void
 h6280_run(int32_t cycles)

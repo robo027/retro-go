@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pce-go.h"
-#include "utils.h"
 #include "pce.h"
 #include "gfx.h"
 
@@ -209,12 +208,12 @@ pce_readIO(uint16_t A)
         case 2: ret = 0xFF; break; // Write only
         case 3: ret = 0xFF; break; // Write only
         case 4: ret = PCE.VCE.regs[PCE.VCE.reg.W].B.l; break; // Color LSB (8 bit)
-        case 5: {            
+        case 5: {
                 //printf("READ VCE Color MSB\n");
                 ret = (PCE.VCE.regs[PCE.VCE.reg.W].B.h & 1) | 0xFE; // Color MSB (1 bit)
                 PCE.VCE.reg.W++;
                 PCE.VCE.reg.W &= 0x1FF;
-                break; 
+                break;
         }
         case 6: ret = 0xFF; break; // Unused
         }
@@ -240,7 +239,7 @@ pce_readIO(uint16_t A)
             uint8_t tmp = PCE.Timer.counter;
             if(PCE.Timer.cycles_counter == Cycles)
                 tmp = (tmp - 1) & 0x7F;
-            ret = (tmp | (PCE.io_buffer & 0x80)); 
+            ret = (tmp | (PCE.io_buffer & 0x80));
         }
         break;
 
@@ -257,7 +256,7 @@ pce_readIO(uint16_t A)
 
     case 0x1400:                /* IRQ */
         switch (A & 3) {
-        case 0:    
+        case 0:
         case 1:
             ret = PCE.io_buffer;
             break;
@@ -394,7 +393,7 @@ pce_writeIO(uint16_t A, uint8_t V)
                 break;
             }
             IO_VDC_REG_ACTIVE.B.l = V;
-            TRACE_GFX2("VDC[%02x].l=0x%02x\n", PCE.VDC.reg, V);
+            TRACE_GFX("VDC[%02x].l=0x%02x\n", PCE.VDC.reg, V);
             return;
 
         case 3: // VDC data (MSB)
@@ -411,18 +410,18 @@ pce_writeIO(uint16_t A, uint8_t V)
                     if ( PCE.VDC.vram == DMA_TRANSFER_PENDING ){
                         int src_inc = (IO_VDC_REG[DCR].W & 8) ? -1 : 1;
                         int dst_inc = (IO_VDC_REG[DCR].W & 4) ? -1 : 1;
-                        while (IO_VDC_REG[LENR].W != 0xFFFF) {                        
+                        while (IO_VDC_REG[LENR].W != 0xFFFF) {
                             if (IO_VDC_REG[DISTR].W < 0x8000) {
                                 PCE.VRAM[IO_VDC_REG[DISTR].W] = PCE.VRAM[IO_VDC_REG[SOUR].W];
                             }
                             IO_VDC_REG[SOUR].W += src_inc;
                             IO_VDC_REG[DISTR].W += dst_inc;
-                            IO_VDC_REG[LENR].W -= 1;                            
+                            IO_VDC_REG[LENR].W -= 1;
                         }
                         //PCE.VDC.status &= 0x3F;//remove busy DMA
                         PCE.VDC.vram = 0;
                         if (DMAIntON)//generate the interrupt when requested
-                            gfx_irq(VDC_STAT_DV);					
+                            gfx_irq(VDC_STAT_DV);
                     }
 
                     PCE.VRAM[IO_VDC_REG[MAWR].W] = (V << 8) | IO_VDC_REG_ACTIVE.B.l;
@@ -472,7 +471,7 @@ pce_writeIO(uint16_t A, uint8_t V)
 
             case HDR:                           // Horizontal Definition
                 V &= 0x7F;
-                TRACE_GFX2("VDC[HDR].h = %d\n", V);
+                TRACE_GFX("VDC[HDR].h = %d\n", V);
                 break;
 
             case VPR:
@@ -506,7 +505,7 @@ pce_writeIO(uint16_t A, uint8_t V)
                 break;
             }
             IO_VDC_REG_ACTIVE.B.h = V;
-            TRACE_GFX2("VDC[%02x].h=0x%02x\n", PCE.VDC.reg, V);
+            TRACE_GFX("VDC[%02x].h=0x%02x\n", PCE.VDC.reg, V);
             return;
         }
         break;
