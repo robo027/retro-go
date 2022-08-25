@@ -52,4 +52,5 @@ typedef struct
 #define VEC_IRQ2   0xFFF6
 #define VEC_BRK    0xFFF6
 
-extern h6280_t CPU_PCE;
+extern h6280_t CPU;
+#define CPU_PCE CPU

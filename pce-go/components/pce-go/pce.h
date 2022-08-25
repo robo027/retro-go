@@ -145,10 +145,6 @@ typedef struct {
 	// Street Fighter 2 Mapper
 	uint8_t SF2;
 
-	// Game Genie Patch
-	uint8_t rp_count;
-	char **patchs;
-	
 	// Remanence latch
 	uint8_t io_buffer;
 	uint16_t VBlankFL;
@@ -285,7 +281,7 @@ uint8_t pce_readIO(uint16_t A);
 
 #define pce_write16(addr, word) {					\
 	uint16_t a = (addr), w = (word); 				\
-	*((uint16_t*)(PageR[a >> 13] + a)) = w;		    \
+	*((uint16_t*)(PageW[a >> 13] + a)) = w;			\
 }
 
 #else
@@ -321,7 +317,7 @@ pce_read16(uint16_t addr)
 static inline void
 pce_write16(uint16_t addr, uint16_t word)
 {
-	*((uint16_t*)(PageR[addr >> 13] + (addr))) = word;
+	*((uint16_t*)(PageW[addr >> 13] + (addr))) = word;
 }
 
 #endif

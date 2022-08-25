@@ -358,7 +358,7 @@ render_lines(int min_line, int max_line)
 {
 	gfx_context.latched = 0;
 
-	uint8_t *screen_buffer = osd_gfx_framebuffer();
+	uint8_t *screen_buffer = osd_gfx_framebuffer(PCE.VDC.screen_width, PCE.VDC.screen_height);
 	if (!screen_buffer) {
 		return;
 	}
@@ -424,13 +424,13 @@ gfx_irq(int type)
 		PCE.VDC.pending_irqs |= (1+type) & 0xF;
 	}
 
-	/* Pop the first pending vdc interrupt only if CPU_PCE.irq_lines is clear */
+	/* Pop the first pending vdc interrupt only if CPU.irq_lines is clear */
 	int pos = 28;
-	while (!(CPU_PCE.irq_lines & INT_IRQ1) && PCE.VDC.pending_irqs) {
+	while (!(CPU.irq_lines & INT_IRQ1) && PCE.VDC.pending_irqs) {
 		if (PCE.VDC.pending_irqs >> pos) {
 			PCE.VDC.status |= 1 << ((PCE.VDC.pending_irqs >> pos)-1);
 			PCE.VDC.pending_irqs &= ~(0xF << pos);
-			CPU_PCE.irq_lines |= INT_IRQ1; // Notify the CPU_PCE
+			CPU.irq_lines |= INT_IRQ1; // Notify the CPU
 		}
 		pos -= 4;
 	}
@@ -476,7 +476,7 @@ gfx_run(void)
 			if (scanline == (temp_rcr + IO_VDC_MINLINE) % 263)
 			{
 				TRACE_GFX("\n-----------------RASTER HIT (%d)------------------\n", scanline);
-				gfx_irq(VDC_STAT_RR);				
+				gfx_irq(VDC_STAT_RR);
 			}
 		}
 
@@ -486,7 +486,7 @@ gfx_run(void)
 	int32_t magical = M_vdc_HDS + (M_vdc_HDW + 1) + M_vdc_HDE;
 	magical = (magical + 2) & ~1;
 	magical -= M_vdc_HDW + 1;
-	int32_t cyc_tot = magical * 8; 
+	int32_t cyc_tot = magical * 8;
 	cyc_tot-=2;
 	switch(PCE.VCE.dot_clock)
 	{
@@ -547,15 +547,6 @@ gfx_run(void)
 				}
 			 }
 		}
-
-		/* Frame done, we can now process pending res change. */
-		if (PCE.VDC.mode_chg) {
-			TRACE_GFX("Changing mode: VDS = %04x VSW = %04x VDW = %04x VCR = %04x\n",
-				IO_VDC_REG[VPR].B.h, IO_VDC_REG[VPR].B.l,
-				IO_VDC_REG[VDW].W, IO_VDC_REG[VCR].W);
-			PCE.VDC.mode_chg = 0;
-			osd_gfx_set_mode(IO_VDC_SCREEN_WIDTH, IO_VDC_SCREEN_HEIGHT);
-		}
 	}
 	/* V Blank area */
 	else {
@@ -574,7 +565,7 @@ gfx_run(void)
 	if ( IO_VDC_STATUS(VDC_STAT_VD) ){
 		CPU_PCE.irq_lines |= INT_IRQ1;
 	}
-	
+
 	h6280_run(PCE.Timer.cycles_per_line - 82 - 2);
 
 	/* DMA Transfer in "progress" */
