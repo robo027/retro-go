@@ -1,5 +1,5 @@
 /*****************************************/
-/* ESP32 (Odroid GO) Graphics Engine     */
+/* ESP32 (retro-go) Graphics Engine     */
 /* Released under the GPL license        */
 /*                                       */
 /* Original Author:                      */
@@ -20,7 +20,6 @@
 #include <psg.h>
 
 #define AUDIO_SAMPLE_RATE 22050
-// #define AUDIO_BUFFER_LENGTH  (AUDIO_SAMPLE_RATE / 60)
 #define AUDIO_BUFFER_LENGTH (AUDIO_SAMPLE_RATE / 60 / 5)
 
 static int16_t audiobuffer[AUDIO_BUFFER_LENGTH * 4];
