@@ -17,8 +17,8 @@
 #define RG_SCREEN_DRIVER            0   // 0 = ILI9341
 #define RG_SCREEN_HOST              SPI2_HOST
 #define RG_SCREEN_SPEED             SPI_MASTER_FREQ_80M
-#define RG_SCREEN_TYPE              4   // 4 = ESPLAY-ST7789V2
-#define RG_SCREEN_WIDTH             320
+#define RG_SCREEN_TYPE              1   // 4 = ESPLAY-ST7789V2
+#define RG_SCREEN_WIDTH             240
 #define RG_SCREEN_HEIGHT            240
 #define RG_SCREEN_ROTATE            0
 #define RG_SCREEN_MARGIN_TOP        0
@@ -27,7 +27,7 @@
 #define RG_SCREEN_MARGIN_RIGHT      0
 
 // Input
-#define RG_GAMEPAD_DRIVER           5   // 1 = ODROID-GO, 2 = Serial, 3 = MRGC-IO 5 = ESPLAY
+#define RG_GAMEPAD_DRIVER           1   // 1 = ODROID-GO, 2 = Serial, 3 = MRGC-IO 5 = ESPLAY
 #define RG_GAMEPAD_HAS_MENU_BTN     1
 #define RG_GAMEPAD_HAS_OPTION_BTN   1
 #define RG_BATTERY_ADC_CHANNEL      ADC1_CHANNEL_3
@@ -38,13 +38,21 @@
 #define RG_GPIO_LED                 GPIO_NUM_38
 
 // I2C BUS
-#define RG_GPIO_I2C_SDA             GPIO_NUM_47
-#define RG_GPIO_I2C_SCL             GPIO_NUM_48
+//#define RG_GPIO_I2C_SDA             GPIO_NUM_47
+//#define RG_GPIO_I2C_SCL             GPIO_NUM_48
 
 // Built-in gamepad
 #define RG_GPIO_GAMEPAD_L           GPIO_NUM_2
-#define RG_GPIO_GAMEPAD_R           GPIO_NUM_5
-#define RG_GPIO_GAMEPAD_MENU        GPIO_NUM_9
+#define RG_GPIO_GAMEPAD_R           GPIO_NUM_17 
+#define RG_GPIO_GAMEPAD_MENU        GPIO_NUM_18
+#define RG_GPIO_GAMEPAD_X           ADC1_CHANNEL_8
+#define RG_GPIO_GAMEPAD_Y           ADC1_CHANNEL_4
+#define RG_GPIO_GAMEPAD_SELECT      GPIO_NUM_16
+#define RG_GPIO_GAMEPAD_START       GPIO_NUM_45
+#define RG_GPIO_GAMEPAD_A           GPIO_NUM_47
+#define RG_GPIO_GAMEPAD_B           GPIO_NUM_46
+#define RG_GPIO_GAMEPAD_OPTION      GPIO_NUM_0
+#define RG_GPIO_GAMEPAD_VOLUME      GPIO_NUM_48
 
 // SNES-style gamepad
 // #define RG_GPIO_GAMEPAD_LATCH       GPIO_NUM_NC
@@ -52,6 +60,7 @@
 // #define RG_GPIO_GAMEPAD_DATA        GPIO_NUM_NC
 
 // SPI Display
+//#define RG_GPIO_LCD_HOST            SPI2_HOST
 #define RG_GPIO_LCD_MISO            GPIO_NUM_NC
 #define RG_GPIO_LCD_MOSI            GPIO_NUM_11
 #define RG_GPIO_LCD_CLK             GPIO_NUM_14
@@ -64,6 +73,7 @@
 #define RG_GPIO_SDSPI_CMD          GPIO_NUM_41
 #define RG_GPIO_SDSPI_CLK          GPIO_NUM_40
 #define RG_GPIO_SDSPI_D0           GPIO_NUM_39
+
 
 // External I2S DAC
 #define RG_GPIO_SND_I2S_BCK         GPIO_NUM_18
