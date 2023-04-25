@@ -17,7 +17,7 @@ try:
 except:
     pass
 
-TARGETS = ["odroid-go"] # We just need to specify the default, the others are discovered below
+TARGETS = ["esplay-s3"] # We just need to specify the default, the others are discovered below
 for t in glob.glob("components/retro-go/targets/*.h"):
     TARGETS.append(os.path.basename(t)[0:-2])
 
